@@ -207,8 +207,11 @@ void ble_adv_update(float distance_m, uint32_t count)
 
 void ble_adv_send(void)
 {
-    /* Transmit on all 3 advertising channels */
-    radio_tx_on_channel(BLE_ADV_CH37_FREQ, BLE_ADV_CH37_WHITEIV);
-    radio_tx_on_channel(BLE_ADV_CH38_FREQ, BLE_ADV_CH38_WHITEIV);
-    radio_tx_on_channel(BLE_ADV_CH39_FREQ, BLE_ADV_CH39_WHITEIV);
+    /* Rotate through advertising channels (1 per call = faster return to ranging) */
+    static uint8_t ch = 0;
+    static const uint8_t freqs[]    = { BLE_ADV_CH37_FREQ,    BLE_ADV_CH38_FREQ,    BLE_ADV_CH39_FREQ };
+    static const uint8_t whiteivs[] = { BLE_ADV_CH37_WHITEIV, BLE_ADV_CH38_WHITEIV, BLE_ADV_CH39_WHITEIV };
+
+    radio_tx_on_channel(freqs[ch], whiteivs[ch]);
+    ch = (ch + 1) % 3;
 }

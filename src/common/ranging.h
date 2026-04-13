@@ -54,7 +54,7 @@ void ranging_msg_get_ts(const uint8_t *ts_field, uint32_t *ts);
 #define PRE_TIMEOUT 5
 
 /* ── Période entre deux mesures (ms) ── */
-#define RNG_DELAY_MS 100
+#define RNG_DELAY_MS 10
 
 /* ── Format des trames IEEE 802.15.4 ──
  *
