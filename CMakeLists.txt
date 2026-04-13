@@ -42,16 +42,10 @@
 cmake_minimum_required(VERSION 3.20)
 
 # ── Chemin vers le SDK Qorvo ──
-# Modifie ce chemin si ton SDK est ailleurs
-set(QORVO_SDK_PATH "${CMAKE_SOURCE_DIR}/../DW3_QM33_SDK_1/Drivers" CACHE PATH "Path to Qorvo SDK Drivers/")
-
-# ── Vérification que le SDK existe ──
-if(NOT EXISTS "${QORVO_SDK_PATH}/CMakeLists.txt")
-    message(FATAL_ERROR
-        "SDK Qorvo non trouvé à : ${QORVO_SDK_PATH}\n"
-        "Vérifie que QORVO_SDK_PATH pointe vers le dossier Drivers/ du SDK.\n"
-        "Ex: cmake -DQORVO_SDK_PATH=/chemin/vers/DW3_QM33_SDK_1/Drivers ..")
-endif()
+# ── SDK vendorisé dans vendor/sdk/ ──
+# Toutes les dépendances SDK (driver UWB, Nordic nRF5 SDK, HAL platform)
+# sont incluses dans le repo. Pas besoin de télécharger le SDK séparément.
+set(QORVO_SDK_PATH "${CMAKE_SOURCE_DIR}/vendor/sdk" CACHE PATH "Path to vendored SDK")
 
 # ── Toolchain ARM (depuis le SDK) ──
 set(CMAKE_TOOLCHAIN_FILE "${QORVO_SDK_PATH}/cmake/arm-none-eabi-gcc.cmake" CACHE STRING "Toolchain")
