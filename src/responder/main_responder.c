@@ -28,6 +28,7 @@
 #include <string.h>
 
 #include "../common/ranging.h"
+#include "../ble/ble_adv.h"
 
 /* ── Trames du protocole ── */
 
@@ -149,6 +150,10 @@ int ds_twr_responder_custom(void)
 
     /* Header CSV sur UART */
     test_run_info((unsigned char *)"# sample,distance_m,tof_ns");
+
+    /* ── BLE Advertising init ── */
+    ble_adv_init();
+    test_run_info((unsigned char *)"BLE ADV READY");
 
     /* ── 4. Boucle de ranging ── */
     while (1)
@@ -281,6 +286,10 @@ int ds_twr_responder_custom(void)
                             distance,
                             tof);
                         test_run_info((unsigned char *)output_buf);
+
+                        /* BLE : diffuser la distance */
+                        ble_adv_update(distance, ranging_count);
+                        ble_adv_send();
                     }
                 }
                 else

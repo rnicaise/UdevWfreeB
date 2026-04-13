@@ -180,6 +180,7 @@ if(UWB_ROLE STREQUAL "initiator")
 elseif(UWB_ROLE STREQUAL "responder")
     list(APPEND PROJECT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/responder/main_responder.c
+        ${CMAKE_SOURCE_DIR}/src/ble/ble_adv.c
     )
 endif()
 
