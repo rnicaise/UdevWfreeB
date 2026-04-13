@@ -1,0 +1,65 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "default",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build/${presetName}"
+        },
+        {
+            "name": "initiator_debug",
+            "inherits": "default",
+            "displayName": "Initiator (Debug)",
+            "description": "Module A — envoie Poll, reçoit Response, envoie Final",
+            "cacheVariables": {
+                "UWB_ROLE": "initiator",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "initiator_release",
+            "inherits": "initiator_debug",
+            "displayName": "Initiator (Release)",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "responder_debug",
+            "inherits": "default",
+            "displayName": "Responder (Debug)",
+            "description": "Module B — reçoit Poll, envoie Response, reçoit Final, calcule distance",
+            "cacheVariables": {
+                "UWB_ROLE": "responder",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "responder_release",
+            "inherits": "responder_debug",
+            "displayName": "Responder (Release)",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "initiator_debug",
+            "configurePreset": "initiator_debug"
+        },
+        {
+            "name": "initiator_release",
+            "configurePreset": "initiator_release"
+        },
+        {
+            "name": "responder_debug",
+            "configurePreset": "responder_debug"
+        },
+        {
+            "name": "responder_release",
+            "configurePreset": "responder_release"
+        }
+    ]
+}

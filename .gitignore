@@ -1,0 +1,8 @@
+build/
+test_minimal/
+*.o
+*.elf
+*.hex
+*.map
+*.d
+.DS_Store
