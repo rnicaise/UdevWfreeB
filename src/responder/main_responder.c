@@ -166,8 +166,12 @@ int ds_twr_responder_custom(void)
         test_run_info((unsigned char *)"ACCEL FAIL");
     }
 
+    /* ── Horloge ms (RTC2, 32768 Hz) ── */
+    NRF_RTC2->PRESCALER = 0;     /* 32768 Hz */
+    NRF_RTC2->TASKS_START = 1;
+
     /* Header CSV sur UART */
-    test_run_info((unsigned char *)"# sample,dist,iax,iay,iaz,rax,ray,raz");
+    test_run_info((unsigned char *)"# ms,sample,dist,iax,iay,iaz,rax,ray,raz");
 
     /* ── BLE Advertising init ── */
     ble_adv_init();
@@ -312,12 +316,16 @@ int ds_twr_responder_custom(void)
                         }
 
                         /* Output UART : CSV distance + accel initiator + accel responder */
-                        snprintf(output_buf, sizeof(output_buf),
-                            "%lu,%3.2f,%d,%d,%d,%d,%d,%d",
-                            (unsigned long)ranging_count,
-                            distance,
-                            (int)accel_rx[0], (int)accel_rx[1], (int)accel_rx[2],
-                            (int)accel_local.x, (int)accel_local.y, (int)accel_local.z);
+                        {
+                            uint32_t ms = (NRF_RTC2->COUNTER * 1000) / 32768;
+                            snprintf(output_buf, sizeof(output_buf),
+                                "%lu,%lu,%3.2f,%d,%d,%d,%d,%d,%d",
+                                (unsigned long)ms,
+                                (unsigned long)ranging_count,
+                                distance,
+                                (int)accel_rx[0], (int)accel_rx[1], (int)accel_rx[2],
+                                (int)accel_local.x, (int)accel_local.y, (int)accel_local.z);
+                        }
                         test_run_info((unsigned char *)output_buf);
 
                         /* BLE : diffuser la distance */
