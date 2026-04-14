@@ -29,6 +29,7 @@
 
 #include "../common/ranging.h"
 #include "../ble/ble_adv.h"
+#include "../accel/accel.h"
 
 /* ── Trames du protocole ── */
 
@@ -86,8 +87,12 @@ static double tof;
 static double distance;
 static uint32_t ranging_count = 0;
 
-/* Accéléromètre (reçu de l'initiator via Poll) */
+/* Accéléromètre initiator (reçu via Poll UWB) */
 static int16_t accel_rx[3]; /* x, y, z en mg */
+
+/* Accéléromètre local (responder) */
+static accel_data_t accel_local;
+static bool accel_ok = false;
 
 /* Buffer pour output UART */
 static char output_buf[128];
@@ -153,8 +158,16 @@ int ds_twr_responder_custom(void)
     /* LEDs debug */
     dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
 
+    /* ── Init accéléromètre local LIS2DH12 ── */
+    accel_ok = accel_init();
+    if (accel_ok) {
+        test_run_info((unsigned char *)"ACCEL OK (LIS2DH12)");
+    } else {
+        test_run_info((unsigned char *)"ACCEL FAIL");
+    }
+
     /* Header CSV sur UART */
-    test_run_info((unsigned char *)"# sample,distance_m,tof_ns");
+    test_run_info((unsigned char *)"# sample,dist,iax,iay,iaz,rax,ray,raz");
 
     /* ── BLE Advertising init ── */
     ble_adv_init();
@@ -293,13 +306,18 @@ int ds_twr_responder_custom(void)
                         distance = tof * SPEED_OF_LIGHT;
                         ranging_count++;
 
-                        /* Output UART : CSV avec distance + accéléromètre */
+                        /* Lire accéléromètre local */
+                        if (accel_ok) {
+                            accel_read(&accel_local);
+                        }
+
+                        /* Output UART : CSV distance + accel initiator + accel responder */
                         snprintf(output_buf, sizeof(output_buf),
-                            "%lu,%3.2f,%.4e,%d,%d,%d",
+                            "%lu,%3.2f,%d,%d,%d,%d,%d,%d",
                             (unsigned long)ranging_count,
                             distance,
-                            tof,
-                            (int)accel_rx[0], (int)accel_rx[1], (int)accel_rx[2]);
+                            (int)accel_rx[0], (int)accel_rx[1], (int)accel_rx[2],
+                            (int)accel_local.x, (int)accel_local.y, (int)accel_local.z);
                         test_run_info((unsigned char *)output_buf);
 
                         /* BLE : diffuser la distance */

@@ -182,6 +182,7 @@ elseif(UWB_ROLE STREQUAL "responder")
     list(APPEND PROJECT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/responder/main_responder.c
         ${CMAKE_SOURCE_DIR}/src/ble/ble_adv.c
+        ${CMAKE_SOURCE_DIR}/src/accel/accel.c
     )
 endif()
 
