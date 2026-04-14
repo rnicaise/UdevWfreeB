@@ -54,7 +54,7 @@ void ranging_msg_get_ts(const uint8_t *ts_field, uint32_t *ts);
 #define PRE_TIMEOUT 5
 
 /* ── Période entre deux mesures (ms) ── */
-#define RNG_DELAY_MS 10
+#define RNG_DELAY_MS 5
 
 /* ── Format des trames IEEE 802.15.4 ──
  *
@@ -86,7 +86,12 @@ void ranging_msg_get_ts(const uint8_t *ts_field, uint32_t *ts);
 #define FINAL_MSG_FINAL_TX_TS_IDX 18
 #define FINAL_MSG_TS_LEN          4
 
+/* Index des données accéléromètre dans le message Poll */
+#define POLL_MSG_ACCEL_X_IDX  10
+#define POLL_MSG_ACCEL_Y_IDX  12
+#define POLL_MSG_ACCEL_Z_IDX  14
+
 /* Taille max du buffer RX */
-#define RX_BUF_LEN 24
+#define RX_BUF_LEN 30
 
 #endif /* RANGING_H */

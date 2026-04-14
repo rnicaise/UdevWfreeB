@@ -29,17 +29,22 @@
 #include <string.h>
 
 #include "../common/ranging.h"
+#include "../accel/accel.h"
 
 /* ── Trames du protocole ── */
 
-/* Poll : envoyé par l'initiator pour démarrer l'échange */
+/* Poll : envoyé par l'initiator pour démarrer l'échange
+ * Bytes 10-15 : accéléromètre XYZ (3× int16_t LE, en mg) */
 static uint8_t tx_poll_msg[] = {
     0x41, 0x88,           /* Frame Control */
     0,                    /* Sequence Number (rempli dynamiquement) */
     0xCA, 0xDE,           /* PAN ID */
     'W', 'A',             /* Destination */
     'V', 'E',             /* Source */
-    FUNC_CODE_POLL        /* Function code = 0x21 */
+    FUNC_CODE_POLL,       /* Function code = 0x21 */
+    0, 0,                 /* [10-11] accel X (int16 LE, mg) */
+    0, 0,                 /* [12-13] accel Y */
+    0, 0                  /* [14-15] accel Z */
 };
 
 /* Response attendu du responder */
@@ -79,6 +84,10 @@ static uint64_t final_tx_ts;
 
 /* Compteur de mesures */
 static uint32_t ranging_count = 0;
+
+/* Accéléromètre */
+static accel_data_t accel_data;
+static bool accel_ok = false;
 
 /* Buffer pour output UART */
 static char output_buf[128];
@@ -150,12 +159,32 @@ int ds_twr_initiator_custom(void)
     /* LEDs pour debug visuel */
     dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
 
+    /* ── Init accéléromètre LIS2DH12 (I2C interne au module DWM3001C) ── */
+    accel_ok = accel_init();
+    if (accel_ok) {
+        test_run_info((unsigned char *)"ACCEL OK (LIS2DH12)");
+    } else {
+        test_run_info((unsigned char *)"ACCEL FAIL — check I2C pins");
+    }
+
     /* Header CSV sur UART */
     test_run_info((unsigned char *)"# sample,distance_m,poll_tx,resp_rx,final_tx");
 
     /* ── 5. Boucle de ranging ── */
     while (1)
     {
+        /* === Lire accéléromètre === */
+        if (accel_ok) {
+            accel_read(&accel_data);
+            /* Encoder XYZ dans le Poll (little-endian) */
+            tx_poll_msg[POLL_MSG_ACCEL_X_IDX]     = (uint8_t)(accel_data.x & 0xFF);
+            tx_poll_msg[POLL_MSG_ACCEL_X_IDX + 1]  = (uint8_t)((accel_data.x >> 8) & 0xFF);
+            tx_poll_msg[POLL_MSG_ACCEL_Y_IDX]     = (uint8_t)(accel_data.y & 0xFF);
+            tx_poll_msg[POLL_MSG_ACCEL_Y_IDX + 1]  = (uint8_t)((accel_data.y >> 8) & 0xFF);
+            tx_poll_msg[POLL_MSG_ACCEL_Z_IDX]     = (uint8_t)(accel_data.z & 0xFF);
+            tx_poll_msg[POLL_MSG_ACCEL_Z_IDX + 1]  = (uint8_t)((accel_data.z >> 8) & 0xFF);
+        }
+
         /* === TX POLL === */
         tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
         dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0);

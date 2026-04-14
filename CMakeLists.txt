@@ -176,6 +176,7 @@ set(PROJECT_SOURCES
 if(UWB_ROLE STREQUAL "initiator")
     list(APPEND PROJECT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/initiator/main_initiator.c
+        ${CMAKE_SOURCE_DIR}/src/accel/accel.c
     )
 elseif(UWB_ROLE STREQUAL "responder")
     list(APPEND PROJECT_SOURCES
@@ -194,6 +195,7 @@ set(INCLUDE_DIRS
     # Notre code
     ${CMAKE_SOURCE_DIR}/src/board
     ${CMAKE_SOURCE_DIR}/src/common
+    ${CMAKE_SOURCE_DIR}/src/accel
 
     # SDK platform
     ${PLATFORM_PATH}/Source/config

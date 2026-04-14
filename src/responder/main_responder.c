@@ -32,7 +32,7 @@
 
 /* ── Trames du protocole ── */
 
-/* Poll attendu de l'initiator */
+/* Poll attendu de l'initiator (avec données accéléromètre) */
 static uint8_t rx_poll_msg[] = {
     0x41, 0x88,
     0,
@@ -40,7 +40,9 @@ static uint8_t rx_poll_msg[] = {
     'W', 'A',             /* Source (initiator) */
     'V', 'E',             /* Destination (responder) */
     FUNC_CODE_POLL,       /* 0x21 */
-    0, 0
+    0, 0,                 /* [10-11] accel X */
+    0, 0,                 /* [12-13] accel Y */
+    0, 0                  /* [14-15] accel Z */
 };
 
 /* Response : envoyé par le responder */
@@ -83,6 +85,9 @@ static uint64_t final_rx_ts; /* t6 */
 static double tof;
 static double distance;
 static uint32_t ranging_count = 0;
+
+/* Accéléromètre (reçu de l'initiator via Poll) */
+static int16_t accel_rx[3]; /* x, y, z en mg */
 
 /* Buffer pour output UART */
 static char output_buf[128];
@@ -187,6 +192,15 @@ int ds_twr_responder_custom(void)
                 uint32_t resp_tx_time;
                 int ret;
 
+                /* Sauvegarder les données accéléromètre du Poll
+                 * (rx_buffer sera écrasé par le Final plus tard) */
+                accel_rx[0] = (int16_t)(rx_buffer[POLL_MSG_ACCEL_X_IDX] |
+                              (rx_buffer[POLL_MSG_ACCEL_X_IDX + 1] << 8));
+                accel_rx[1] = (int16_t)(rx_buffer[POLL_MSG_ACCEL_Y_IDX] |
+                              (rx_buffer[POLL_MSG_ACCEL_Y_IDX + 1] << 8));
+                accel_rx[2] = (int16_t)(rx_buffer[POLL_MSG_ACCEL_Z_IDX] |
+                              (rx_buffer[POLL_MSG_ACCEL_Z_IDX + 1] << 8));
+
                 /* === TX RESPONSE === */
 
                 /* Timestamp RX du Poll (t2) */
@@ -279,12 +293,13 @@ int ds_twr_responder_custom(void)
                         distance = tof * SPEED_OF_LIGHT;
                         ranging_count++;
 
-                        /* Output UART : CSV */
+                        /* Output UART : CSV avec distance + accéléromètre */
                         snprintf(output_buf, sizeof(output_buf),
-                            "%lu,%3.2f,%.4e",
+                            "%lu,%3.2f,%.4e,%d,%d,%d",
                             (unsigned long)ranging_count,
                             distance,
-                            tof);
+                            tof,
+                            (int)accel_rx[0], (int)accel_rx[1], (int)accel_rx[2]);
                         test_run_info((unsigned char *)output_buf);
 
                         /* BLE : diffuser la distance */
