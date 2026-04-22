@@ -181,8 +181,8 @@ if(UWB_ROLE STREQUAL "initiator")
 elseif(UWB_ROLE STREQUAL "responder")
     list(APPEND PROJECT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/responder/main_responder.c
-        ${CMAKE_SOURCE_DIR}/src/ble/ble_adv.c
         ${CMAKE_SOURCE_DIR}/src/accel/accel.c
+        ${CMAKE_SOURCE_DIR}/src/uart/uart_log.c
     )
 endif()
 
@@ -197,6 +197,7 @@ set(INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/src/board
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/src/accel
+    ${CMAKE_SOURCE_DIR}/src/uart
 
     # SDK platform
     ${PLATFORM_PATH}/Source/config

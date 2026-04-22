@@ -88,9 +88,7 @@ static uint32_t ranging_count = 0;
 /* Accéléromètre */
 static accel_data_t accel_data;
 static bool accel_ok = false;
-
-/* Buffer pour output UART */
-static char output_buf[128];
+static uint32_t accel_retry_div = 0;
 
 /* ── Config UWB (depuis le SDK) ── */
 extern dwt_config_t config_options;
@@ -173,17 +171,36 @@ int ds_twr_initiator_custom(void)
     /* ── 5. Boucle de ranging ── */
     while (1)
     {
-        /* === Lire accéléromètre === */
-        if (accel_ok) {
-            accel_read(&accel_data);
-            /* Encoder XYZ dans le Poll (little-endian) */
-            tx_poll_msg[POLL_MSG_ACCEL_X_IDX]     = (uint8_t)(accel_data.x & 0xFF);
-            tx_poll_msg[POLL_MSG_ACCEL_X_IDX + 1]  = (uint8_t)((accel_data.x >> 8) & 0xFF);
-            tx_poll_msg[POLL_MSG_ACCEL_Y_IDX]     = (uint8_t)(accel_data.y & 0xFF);
-            tx_poll_msg[POLL_MSG_ACCEL_Y_IDX + 1]  = (uint8_t)((accel_data.y >> 8) & 0xFF);
-            tx_poll_msg[POLL_MSG_ACCEL_Z_IDX]     = (uint8_t)(accel_data.z & 0xFF);
-            tx_poll_msg[POLL_MSG_ACCEL_Z_IDX + 1]  = (uint8_t)((accel_data.z >> 8) & 0xFF);
+        /* === Lire accéléromètre (robuste) ===
+         * Si l'init échoue au boot (ou plus tard), on retente périodiquement.
+         */
+        if (!accel_ok)
+        {
+            accel_retry_div++;
+            if ((accel_retry_div & 0x3Fu) == 0u)
+            {
+                accel_ok = accel_init();
+                if (accel_ok)
+                {
+                    test_run_info((unsigned char *)"ACCEL RECOVERED");
+                }
+            }
         }
+        else
+        {
+            if (!accel_read(&accel_data))
+            {
+                accel_ok = false;
+            }
+        }
+
+        /* Encoder XYZ dans le Poll (little-endian) */
+        tx_poll_msg[POLL_MSG_ACCEL_X_IDX]      = (uint8_t)(accel_data.x & 0xFF);
+        tx_poll_msg[POLL_MSG_ACCEL_X_IDX + 1]  = (uint8_t)((accel_data.x >> 8) & 0xFF);
+        tx_poll_msg[POLL_MSG_ACCEL_Y_IDX]      = (uint8_t)(accel_data.y & 0xFF);
+        tx_poll_msg[POLL_MSG_ACCEL_Y_IDX + 1]  = (uint8_t)((accel_data.y >> 8) & 0xFF);
+        tx_poll_msg[POLL_MSG_ACCEL_Z_IDX]      = (uint8_t)(accel_data.z & 0xFF);
+        tx_poll_msg[POLL_MSG_ACCEL_Z_IDX + 1]  = (uint8_t)((accel_data.z >> 8) & 0xFF);
 
         /* === TX POLL === */
         tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
@@ -196,15 +213,6 @@ int ds_twr_initiator_custom(void)
         /* Attente : bonne réception, timeout, ou erreur */
         waitforsysstatus(&status_reg, NULL,
             (DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR), 0);
-
-        /* Log TX status pour debug */
-        {
-            uint32_t tx_status = dwt_readsysstatuslo();
-            snprintf(output_buf, sizeof(output_buf),
-                "POLL seq=%u rxstat=0x%08lX txstat=0x%08lX",
-                (unsigned)frame_seq_nb, (unsigned long)status_reg, (unsigned long)tx_status);
-            test_run_info((unsigned char *)output_buf);
-        }
 
         frame_seq_nb++;
 
@@ -262,28 +270,16 @@ int ds_twr_initiator_custom(void)
                     frame_seq_nb++;
                     ranging_count++;
 
-                    /* Output UART : numéro de mesure + timestamps bruts */
-                    snprintf(output_buf, sizeof(output_buf),
-                        "%lu,TX_OK,0x%08lX,0x%08lX,0x%08lX",
-                        (unsigned long)ranging_count,
-                        (unsigned long)(uint32_t)poll_tx_ts,
-                        (unsigned long)(uint32_t)resp_rx_ts,
-                        (unsigned long)(uint32_t)final_tx_ts);
-                    test_run_info((unsigned char *)output_buf);
+                    /* Hot path: no per-frame debug prints to maximize ranging rate. */
                 }
                 else
                 {
                     /* Delayed TX raté (trop tard) — on skip */
-                    test_run_info((unsigned char *)"FINAL_TX_LATE");
                 }
             }
         }
         else
         {
-            /* Timeout ou erreur RX — log status pour debug */
-            snprintf(output_buf, sizeof(output_buf),
-                "RX_FAIL status=0x%08lX", (unsigned long)status_reg);
-            test_run_info((unsigned char *)output_buf);
             dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
         }
 

@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">UWB Receiver</string>
+    <string name="notif_channel_name">UWB acquisition</string>
+    <string name="notif_channel_desc">Live USB serial acquisition and recording</string>
+</resources>

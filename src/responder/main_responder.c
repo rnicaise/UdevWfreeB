@@ -26,10 +26,11 @@
 #include <shared_functions.h>
 #include <stdio.h>
 #include <string.h>
+#include <nrf.h>
 
 #include "../common/ranging.h"
-#include "../ble/ble_adv.h"
 #include "../accel/accel.h"
+#include "../uart/uart_log.h"
 
 /* ── Trames du protocole ── */
 
@@ -111,6 +112,8 @@ extern void test_run_info(unsigned char *data);
 int ds_twr_responder_custom(void)
 {
     test_run_info((unsigned char *)"UWB RANGING RESP v1.0");
+    uart_log_init();
+    uart_log_write("UWB RANGING RESP v1.0");
 
     /* ── 1. Init hardware ── */
     port_set_dw_ic_spi_fastrate();
@@ -166,12 +169,13 @@ int ds_twr_responder_custom(void)
         test_run_info((unsigned char *)"ACCEL FAIL");
     }
 
-    /* Header CSV sur UART */
-    test_run_info((unsigned char *)"# sample,dist,iax,iay,iaz,rax,ray,raz");
+    /* Horloge ms (RTC2, 32768 Hz) */
+    NRF_RTC2->PRESCALER = 0;
+    NRF_RTC2->TASKS_START = 1;
 
-    /* ── BLE Advertising init ── */
-    ble_adv_init();
-    test_run_info((unsigned char *)"BLE ADV READY");
+    /* Header CSV Android */
+    test_run_info((unsigned char *)"# ms,sample,dist,iax,iay,iaz,rax,ray,raz");
+    uart_log_write("# ms,sample,dist,iax,iay,iaz,rax,ray,raz");
 
     /* ── 4. Boucle de ranging ── */
     while (1)
@@ -312,17 +316,17 @@ int ds_twr_responder_custom(void)
                         }
 
                         /* Output UART : CSV distance + accel initiator + accel responder */
-                        snprintf(output_buf, sizeof(output_buf),
-                            "%lu,%3.2f,%d,%d,%d,%d,%d,%d",
+                        {
+                            uint32_t ms = (NRF_RTC2->COUNTER * 1000) / 32768;
+                            snprintf(output_buf, sizeof(output_buf),
+                            "%lu,%lu,%.2f,%d,%d,%d,%d,%d,%d",
+                            (unsigned long)ms,
                             (unsigned long)ranging_count,
                             distance,
                             (int)accel_rx[0], (int)accel_rx[1], (int)accel_rx[2],
                             (int)accel_local.x, (int)accel_local.y, (int)accel_local.z);
-                        test_run_info((unsigned char *)output_buf);
-
-                        /* BLE : diffuser la distance */
-                        ble_adv_update(distance, ranging_count);
-                        ble_adv_send();
+                        }
+                        uart_log_write(output_buf);
                     }
                 }
                 else
