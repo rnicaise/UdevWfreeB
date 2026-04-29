@@ -34,9 +34,11 @@ import com.qorvo.uwbreceiver.R
 import com.qorvo.uwbreceiver.data.CsvParser
 import com.qorvo.uwbreceiver.data.LinkState
 import com.qorvo.uwbreceiver.data.PhoneTelemetry
+import com.qorvo.uwbreceiver.data.RangingMode
 import com.qorvo.uwbreceiver.data.RecordingManager
 import com.qorvo.uwbreceiver.data.RuntimeStore
 import com.qorvo.uwbreceiver.data.SettingsStore
+import com.qorvo.uwbreceiver.data.TestProfile
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -61,6 +63,7 @@ class UwbForegroundService : Service() {
     private var connectJob: Job? = null
     private var readJob: Job? = null
     private var settingsJob: Job? = null
+    private var applySettingsJob: Job? = null
 
     private var shouldConnect = false
 
@@ -75,6 +78,8 @@ class UwbForegroundService : Service() {
     private var medianWindow = 5
     private var requestedUwbDataRateKbps = 6800
     private var requestedAcquisitionPeriodMs = 20
+    private var requestedRangingMode = RangingMode.DS_TWR
+    private var requestedTestProfile = TestProfile.STABLE_FULL
     private var lastAppliedUwbDataRateKbps: Int? = null
     private val distWindow = ArrayDeque<Float>()
 
@@ -181,6 +186,7 @@ class UwbForegroundService : Service() {
                 shouldConnect = false
                 stopRecordingInternal()
                 stopDistanceAlert()
+                applySettingsJob?.cancel()
                 closePort()
                 RuntimeStore.setLinkState(LinkState.DISCONNECTED, "Disconnected")
                 stopSelf()
@@ -203,6 +209,7 @@ class UwbForegroundService : Service() {
         connectJob?.cancel()
         readJob?.cancel()
         settingsJob?.cancel()
+        applySettingsJob?.cancel()
         serviceScope.cancel()
 
         stopPhoneTelemetry()
@@ -393,6 +400,8 @@ class UwbForegroundService : Service() {
                 medianWindow = controls.medianWindow.coerceAtLeast(1)
                 requestedUwbDataRateKbps = controls.uwbDataRateKbps
                 requestedAcquisitionPeriodMs = controls.acquisitionPeriodMs
+                requestedRangingMode = controls.rangingMode
+                requestedTestProfile = controls.testProfile
                 if (medianWindow != previousMedian) {
                     distWindow.clear()
                 }
@@ -401,25 +410,47 @@ class UwbForegroundService : Service() {
     }
 
     private fun applyUwbSettings() {
-        val sentRate = sendCommand("CFG,UWB_DATARATE_KBPS=$requestedUwbDataRateKbps\n")
-        val sentPeriod = sendCommand("CFG,ACQ_PERIOD_MS=$requestedAcquisitionPeriodMs\n")
+        val rate = requestedUwbDataRateKbps
+        val period = requestedAcquisitionPeriodMs
+        val mode = requestedRangingMode
+        val profile = requestedTestProfile
 
-        if (sentRate && sentPeriod) {
-            lastAppliedUwbDataRateKbps = requestedUwbDataRateKbps
+        applySettingsJob?.cancel()
+        applySettingsJob = serviceScope.launch {
             RuntimeStore.setLinkState(
                 RuntimeStore.state.value.linkState,
-                "Applied UWB: ${requestedUwbDataRateKbps} kbps, ${requestedAcquisitionPeriodMs} ms"
+                "Sending UWB: ${profile.name}, $rate kbps, $period ms, ${mode.name}"
             )
-        } else {
-            RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "UWB cmd pending (connect first)")
+
+            val sentProfile = sendCommandSlowly("CFG,TEST_PROFILE=${profile.name}\n")
+            delay(COMMAND_GAP_MS)
+            val sentRate = sendCommandSlowly("CFG,UWB_DATARATE_KBPS=$rate\n")
+            delay(COMMAND_GAP_MS)
+            val sentPeriod = sendCommandSlowly("CFG,ACQ_PERIOD_MS=$period\n")
+            delay(COMMAND_GAP_MS)
+            val sentMode = sendCommandSlowly("CFG,RANGING_MODE=${mode.name}\n")
+
+            if (sentProfile && sentRate && sentPeriod && sentMode) {
+                lastAppliedUwbDataRateKbps = rate
+            } else {
+                RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "UWB cmd pending (connect first)")
+            }
         }
     }
 
-    private fun sendCommand(command: String): Boolean {
+    private suspend fun sendCommandSlowly(command: String): Boolean {
         val port = activePort ?: return false
         return try {
             val payload = command.toByteArray(Charsets.US_ASCII)
-            port.write(payload, 200)
+            val singleByte = ByteArray(1)
+            for (byte in payload) {
+                if (activePort !== port) {
+                    return false
+                }
+                singleByte[0] = byte
+                port.write(singleByte, 200)
+                delay(COMMAND_BYTE_DELAY_MS)
+            }
             Timber.i("Sent command: %s", command.trim())
             true
         } catch (e: Exception) {
@@ -600,6 +631,8 @@ class UwbForegroundService : Service() {
         private const val DISTANCE_ALERT_THRESHOLD_M = 1.0f
         private const val ALERT_BEEP_DURATION_MS = 250
         private const val ALERT_BEEP_PERIOD_MS = 300
+        private const val COMMAND_BYTE_DELAY_MS = 15L
+        private const val COMMAND_GAP_MS = 120L
 
         const val ACTION_CONNECT = "com.qorvo.uwbreceiver.action.CONNECT"
         const val ACTION_DISCONNECT = "com.qorvo.uwbreceiver.action.DISCONNECT"

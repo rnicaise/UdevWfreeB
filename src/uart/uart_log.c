@@ -7,15 +7,37 @@
 #define UART_TX_TIMEOUT_CYCLES 20000u
 #define UART_TX_CHUNK_MAX 96u
 #define UART_RX_CMD_MAX 96u
+#define UART_RX_CMD_QUEUE_LEN 4u
 
 #define UART_TX_PIN NRF_GPIO_PIN_MAP(0, 19)
 #define UART_RX_PIN NRF_GPIO_PIN_MAP(0, 15)
 
 static uint8_t rx_byte;
 static char rx_line[UART_RX_CMD_MAX];
-static char ready_line[UART_RX_CMD_MAX];
+static char cmd_queue[UART_RX_CMD_QUEUE_LEN][UART_RX_CMD_MAX];
 static uint32_t rx_line_len;
-static bool cmd_ready;
+static uint8_t cmd_queue_head;
+static uint8_t cmd_queue_tail;
+static uint8_t cmd_queue_count;
+
+static void uart_enqueue_cmd(const char *line)
+{
+    if (line == 0)
+    {
+        return;
+    }
+
+    /* If queue is full, drop the oldest so the newest commands still apply. */
+    if (cmd_queue_count >= UART_RX_CMD_QUEUE_LEN)
+    {
+        cmd_queue_head = (uint8_t)((cmd_queue_head + 1u) % UART_RX_CMD_QUEUE_LEN);
+        cmd_queue_count--;
+    }
+
+    memcpy(cmd_queue[cmd_queue_tail], line, UART_RX_CMD_MAX);
+    cmd_queue_tail = (uint8_t)((cmd_queue_tail + 1u) % UART_RX_CMD_QUEUE_LEN);
+    cmd_queue_count++;
+}
 
 static void uart_start_rx_byte(void)
 {
@@ -82,7 +104,9 @@ void uart_log_init(void)
     NRF_UARTE0->ENABLE = UARTE_ENABLE_ENABLE_Enabled;
 
     rx_line_len = 0;
-    cmd_ready = false;
+    cmd_queue_head = 0;
+    cmd_queue_tail = 0;
+    cmd_queue_count = 0;
     uart_start_rx_byte();
 }
 
@@ -144,11 +168,10 @@ void uart_log_poll_rx(void)
 
     if ((b == '\r') || (b == '\n'))
     {
-        if ((rx_line_len > 0) && !cmd_ready)
+        if (rx_line_len > 0)
         {
             rx_line[rx_line_len] = '\0';
-            memcpy(ready_line, rx_line, rx_line_len + 1u);
-            cmd_ready = true;
+            uart_enqueue_cmd(rx_line);
         }
         rx_line_len = 0;
     }
@@ -170,12 +193,14 @@ void uart_log_poll_rx(void)
 bool uart_log_read_command(char *out, uint32_t out_len)
 {
     uint32_t n;
+    const char *ready_line;
 
-    if ((out == 0) || (out_len == 0) || !cmd_ready)
+    if ((out == 0) || (out_len == 0) || (cmd_queue_count == 0u))
     {
         return false;
     }
 
+    ready_line = cmd_queue[cmd_queue_head];
     n = (uint32_t)strlen(ready_line);
     if (n >= out_len)
     {
@@ -184,6 +209,7 @@ bool uart_log_read_command(char *out, uint32_t out_len)
 
     memcpy(out, ready_line, n);
     out[n] = '\0';
-    cmd_ready = false;
+    cmd_queue_head = (uint8_t)((cmd_queue_head + 1u) % UART_RX_CMD_QUEUE_LEN);
+    cmd_queue_count--;
     return true;
 }

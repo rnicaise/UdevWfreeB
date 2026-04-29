@@ -53,6 +53,8 @@ class MainActivity : ComponentActivity() {
                     onMedianWindowChange = viewModel::updateMedianWindow,
                     onUwbDataRateChange = viewModel::updateUwbDataRateKbps,
                     onAcquisitionPeriodChange = viewModel::updateAcquisitionPeriodMs,
+                    onRangingModeChange = viewModel::updateRangingMode,
+                    onTestProfileChange = viewModel::applyTestProfile,
                     onPreset20msStable = viewModel::applyPreset20msStable,
                     onPresetMaxSpeed = viewModel::applyPresetMaxSpeed,
                     onPresetOutdoorRobust = viewModel::applyPresetOutdoorRobust,

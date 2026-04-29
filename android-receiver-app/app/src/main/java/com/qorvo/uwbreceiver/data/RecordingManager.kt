@@ -40,7 +40,7 @@ class RecordingManager(private val context: Context) {
             ?: error("Unable to open output stream")
 
         writer = BufferedWriter(OutputStreamWriter(output)).apply {
-            appendLine("ms,sample,dist_raw,dist_filt,iax,iay,iaz,rax,ray,raz,phone_gx,phone_gy,phone_gz,phone_lat,phone_lon,phone_alt_m,phone_speed_mps,phone_fix_elapsed_ms")
+            appendLine("ms,sample,dist_raw,dist_filt,iax,iay,iaz,rax,ray,raz,resp_acq_ms,init_acq_ms,resp_profile_opt,init_profile_opt,phone_gx,phone_gy,phone_gz,phone_lat,phone_lon,phone_alt_m,phone_speed_mps,phone_fix_elapsed_ms")
             flush()
         }
         currentUri = uri
@@ -76,6 +76,14 @@ class RecordingManager(private val context: Context) {
             append(sample.ray)
             append(',')
             append(sample.raz)
+            append(',')
+            append(sample.responderAcquisitionPeriodMs?.toString() ?: "")
+            append(',')
+            append(sample.initiatorAcquisitionPeriodMs?.toString() ?: "")
+            append(',')
+            append(sample.responderProfileOpt?.toString() ?: "")
+            append(',')
+            append(sample.initiatorProfileOpt?.toString() ?: "")
             append(',')
             append(phone.gyroX?.toString() ?: "")
             append(',')

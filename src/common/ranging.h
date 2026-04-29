@@ -56,6 +56,14 @@ void ranging_msg_get_ts(const uint8_t *ts_field, uint32_t *ts);
 /* ── Période entre deux mesures (ms) ── */
 #define RNG_DELAY_MS 1
 
+/* ── Profils de test runtime (non-PHY, safe à chaud) ── */
+#define UWB_TEST_PROFILE_FAST_DISTANCE_ONLY  0u
+#define UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED 1u
+#define UWB_TEST_PROFILE_STABLE_FULL         2u
+#define UWB_TEST_PROFILE_ROBUST_DETECTION    3u
+#define UWB_TEST_PROFILE_DIAGNOSTICS_FULL    4u
+#define UWB_TEST_PROFILE_DEFAULT UWB_TEST_PROFILE_STABLE_FULL
+
 /* ── Format des trames IEEE 802.15.4 ──
  *
  * Toutes les trames partagent ce format :

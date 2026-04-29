@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qorvo.uwbreceiver.data.CsvSample
 import com.qorvo.uwbreceiver.data.LinkState
+import com.qorvo.uwbreceiver.data.RangingMode
+import com.qorvo.uwbreceiver.data.TestProfile
 import com.qorvo.uwbreceiver.data.UwbControlSettings
 import com.qorvo.uwbreceiver.data.UwbUiState
 import com.qorvo.uwbreceiver.ui.theme.GreenGood
@@ -58,6 +60,8 @@ fun UwbMainScreen(
     onMedianWindowChange: (Int) -> Unit,
     onUwbDataRateChange: (Int) -> Unit,
     onAcquisitionPeriodChange: (Int) -> Unit,
+    onRangingModeChange: (RangingMode) -> Unit,
+    onTestProfileChange: (TestProfile) -> Unit,
     onPreset20msStable: () -> Unit,
     onPresetMaxSpeed: () -> Unit,
     onPresetOutdoorRobust: () -> Unit,
@@ -182,6 +186,10 @@ fun UwbMainScreen(
                 StatRow("Connection", state.runtime.linkState.name)
                 StatRow("Status", state.runtime.status)
                 StatRow("Real Hz", String.format("%.1f", state.runtime.hz))
+                StatRow("Resp acq ms", sample?.responderAcquisitionPeriodMs?.toString() ?: "--")
+                StatRow("Init acq ms", sample?.initiatorAcquisitionPeriodMs?.toString() ?: "--")
+                StatRow("Resp profile", profileLabel(sample?.responderProfileOpt))
+                StatRow("Init profile", profileLabel(sample?.initiatorProfileOpt))
                 StatRow("Samples", state.runtime.samples.toString())
                 StatRow("Duration", formatDuration(state.elapsedSec))
                 StatRow("Recording", if (state.runtime.recording) "ON" else "OFF")
@@ -266,6 +274,63 @@ fun UwbMainScreen(
                 Text("UWB controls", fontWeight = FontWeight.Bold)
                 val presetName = presetLabel(state.controls)
                 Text("Preset actif: $presetName", color = TextSecondary)
+                Text("Test profile: ${testProfileLabel(state.controls.testProfile)}", color = TextSecondary)
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onTestProfileChange(TestProfile.FAST_DISTANCE_ONLY) },
+                        modifier = Modifier.weight(1f),
+                        enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    ) {
+                        Text("Fast dist")
+                    }
+                    Button(
+                        onClick = { onTestProfileChange(TestProfile.FAST_ACCEL_DECIMATED) },
+                        modifier = Modifier.weight(1f),
+                        enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    ) {
+                        Text("Fast accel/4")
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onTestProfileChange(TestProfile.STABLE_FULL) },
+                        modifier = Modifier.weight(1f),
+                        enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    ) {
+                        Text("Stable full")
+                    }
+                    Button(
+                        onClick = { onTestProfileChange(TestProfile.ROBUST_DETECTION) },
+                        modifier = Modifier.weight(1f),
+                        enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    ) {
+                        Text("Robust")
+                    }
+                }
+                Button(
+                    onClick = { onTestProfileChange(TestProfile.DIAGNOSTICS_FULL) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = state.runtime.linkState == LinkState.CONNECTED,
+                ) {
+                    Text("Diagnostics full")
+                }
+
+                Text("Ranging mode: ${state.controls.rangingMode.name}", color = TextSecondary)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onRangingModeChange(RangingMode.DS_TWR) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("DS-TWR")
+                    }
+                    Button(
+                        onClick = { onRangingModeChange(RangingMode.SS_TWR) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("SS-TWR")
+                    }
+                }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -306,8 +371,9 @@ fun UwbMainScreen(
                     Button(
                         onClick = { onUwbDataRateChange(850) },
                         modifier = Modifier.weight(1f),
+                        enabled = false,
                     ) {
-                        Text("850 kbps")
+                        Text("850 boot only")
                     }
                     Button(
                         onClick = { onUwbDataRateChange(6800) },
@@ -335,7 +401,11 @@ fun UwbMainScreen(
                     Text("Apply UWB settings")
                 }
                 Text(
-                    text = "Note: data-rate command requires firmware command support.",
+                    text = "Note: 850 kbps est expérimental et non-switchable à chaud; il faudra un profil firmware boot dédié.",
+                    color = TextSecondary,
+                )
+                Text(
+                    text = "Note: SS-TWR est expose via commande runtime; si non supporte par firmware, un ERR est affiche dans Status.",
                     color = TextSecondary,
                 )
                 Text(
@@ -403,7 +473,26 @@ private fun presetLabel(controls: UwbControlSettings): String {
     return when {
         controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 5 -> "20ms stable"
         controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 3 -> "Max speed"
-        controls.uwbDataRateKbps == 850 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 7 -> "Outdoor robust"
+        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 7 -> "Outdoor robust"
         else -> "Custom"
+    }
+}
+
+private fun testProfileLabel(profile: TestProfile): String {
+    return when (profile) {
+        TestProfile.FAST_DISTANCE_ONLY -> "Fast distance only"
+        TestProfile.FAST_ACCEL_DECIMATED -> "Fast + accel decimated"
+        TestProfile.STABLE_FULL -> "Stable full telemetry"
+        TestProfile.ROBUST_DETECTION -> "Robust detection"
+        TestProfile.DIAGNOSTICS_FULL -> "Diagnostics full"
+    }
+}
+
+private fun profileLabel(profileOpt: Int?): String {
+    return when (profileOpt) {
+        35 -> "35 / 6.8M stable"
+        40 -> "40 / 850K robust"
+        null -> "--"
+        else -> profileOpt.toString()
     }
 }

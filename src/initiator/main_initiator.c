@@ -29,21 +29,21 @@
 #include <string.h>
 
 #include "../common/ranging.h"
+#include "../common/uwb_profiles.h"
 #include "../accel/accel.h"
-
-#define UWB_PROFILE_OPT_850K 3u
-#define UWB_PROFILE_OPT_6M8  35u
 
 #define POLL_MSG_PROFILE_IDX      16
 #define POLL_MSG_SWITCH_TOKEN_IDX 17
 #define POLL_MSG_ACQ_PERIOD_IDX   18
 #define POLL_MSG_ACQ_TOKEN_IDX    19
+#define POLL_MSG_TEST_PROFILE_IDX 20
 
 #define RESP_MSG_CTRL_OPT_IDX   11
 #define RESP_MSG_CTRL_TOKEN_IDX 12
 #define RESP_MSG_CTRL_FLAGS_IDX 13
 #define RESP_MSG_CTRL_ACQ_MS_IDX 14
 #define RESP_MSG_CTRL_ACQ_TOKEN_IDX 15
+#define RESP_MSG_CTRL_TEST_PROFILE_IDX 16
 
 #define RESP_FLAG_SWITCH_PENDING 0x01u
 #define RESP_FLAG_ACQ_PENDING    0x02u
@@ -62,10 +62,11 @@ static uint8_t tx_poll_msg[] = {
     0, 0,                 /* [10-11] accel X (int16 LE, mg) */
     0, 0,                 /* [12-13] accel Y */
     0, 0,                 /* [14-15] accel Z */
-    UWB_PROFILE_OPT_6M8,  /* [16] profile option used by initiator */
+    UWB_PROFILE_OPT_6M8_STABLE,  /* [16] profile option used by initiator */
     0,                    /* [17] rate switch token */
     RNG_DELAY_MS,         /* [18] acquisition period currently applied (ms) */
-    0                     /* [19] period switch token */
+    0,                    /* [19] period switch token */
+    UWB_TEST_PROFILE_DEFAULT /* [20] active safe test profile */
 };
 
 /* Response attendu du responder */
@@ -110,16 +111,20 @@ static uint32_t ranging_count = 0;
 static accel_data_t accel_data;
 static bool accel_ok = false;
 static uint32_t accel_retry_div = 0;
+static uint32_t accel_sample_count = 0;
 
 static uint8_t acquisition_period_ms = RNG_DELAY_MS;
+static uint8_t active_test_profile = UWB_TEST_PROFILE_DEFAULT;
 
-static uint8_t current_profile_opt = UWB_PROFILE_OPT_6M8;
-static uint8_t pending_profile_opt = UWB_PROFILE_OPT_6M8;
+static uint8_t current_profile_opt = UWB_PROFILE_OPT_6M8_STABLE;
+static uint8_t pending_profile_opt = UWB_PROFILE_OPT_6M8_STABLE;
 static uint8_t pending_switch_token = 0;
 static bool switch_request_armed = false;
 static uint8_t pending_acq_period_ms = RNG_DELAY_MS;
 static uint8_t pending_acq_token = 0;
 static bool acq_request_armed = false;
+
+static const uwb_runtime_profile_t *active_profile = NULL;
 
 /* ── Config UWB (depuis le SDK) ── */
 extern dwt_config_t config_options;
@@ -131,7 +136,7 @@ extern void test_run_info(unsigned char *data);
 
 static bool is_supported_profile_opt(uint8_t opt)
 {
-    return (opt == UWB_PROFILE_OPT_6M8) || (opt == UWB_PROFILE_OPT_850K);
+    return uwb_profile_find(opt) != NULL;
 }
 
 static bool is_supported_acq_period(uint8_t period_ms)
@@ -139,14 +144,38 @@ static bool is_supported_acq_period(uint8_t period_ms)
     return (period_ms >= 1u) && (period_ms <= 200u);
 }
 
+static bool is_supported_test_profile(uint8_t profile)
+{
+    return profile <= UWB_TEST_PROFILE_DIAGNOSTICS_FULL;
+}
+
+static uint8_t test_profile_accel_decimation(uint8_t profile)
+{
+    switch (profile)
+    {
+        case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
+            return 0u;
+        case UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED:
+            return 4u;
+        case UWB_TEST_PROFILE_ROBUST_DETECTION:
+            return 2u;
+        case UWB_TEST_PROFILE_STABLE_FULL:
+        case UWB_TEST_PROFILE_DIAGNOSTICS_FULL:
+        default:
+            return 1u;
+    }
+}
+
 static int apply_profile_option(uint8_t opt)
 {
-    if (!is_supported_profile_opt(opt))
+    const uwb_runtime_profile_t *profile = uwb_profile_find(opt);
+
+    if (profile == NULL)
     {
         return DWT_ERROR;
     }
 
-    config_options.dataRate = (opt == UWB_PROFILE_OPT_850K) ? DWT_BR_850K : DWT_BR_6M8;
+    config_options = profile->config;
 
     if (dwt_configure(&config_options))
     {
@@ -164,9 +193,11 @@ static int apply_profile_option(uint8_t opt)
 
     dwt_setrxantennadelay(RX_ANT_DLY);
     dwt_settxantennadelay(TX_ANT_DLY);
-    dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
-    dwt_setrxtimeout(RESP_RX_TIMEOUT_UUS);
-    dwt_setpreambledetecttimeout(PRE_TIMEOUT);
+    dwt_setrxaftertxdelay(profile->initiator_poll_tx_to_resp_rx_dly_uus);
+    dwt_setrxtimeout(profile->initiator_resp_rx_timeout_uus);
+    dwt_setpreambledetecttimeout(profile->pre_timeout_symbols);
+
+    active_profile = profile;
 
     return DWT_SUCCESS;
 }
@@ -199,6 +230,12 @@ int ds_twr_initiator_custom(void)
     }
 
     /* ── 2. Config UWB ── */
+    active_profile = uwb_profile_find(current_profile_opt);
+    if (active_profile != NULL)
+    {
+        config_options = active_profile->config;
+    }
+
     if (dwt_configure(&config_options))
     {
         test_run_info((unsigned char *)"CONFIG FAILED");
@@ -220,9 +257,9 @@ int ds_twr_initiator_custom(void)
     dwt_settxantennadelay(TX_ANT_DLY);
 
     /* ── 4. Timing : délais et timeouts ── */
-    dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
-    dwt_setrxtimeout(RESP_RX_TIMEOUT_UUS);
-    dwt_setpreambledetecttimeout(PRE_TIMEOUT);
+    dwt_setrxaftertxdelay(active_profile->initiator_poll_tx_to_resp_rx_dly_uus);
+    dwt_setrxtimeout(active_profile->initiator_resp_rx_timeout_uus);
+    dwt_setpreambledetecttimeout(active_profile->pre_timeout_symbols);
 
     /* DWM3001CDK : LNA/PA intégrés dans le module, contrôlés par DW3000 GPIO5/6 */
     dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
@@ -247,7 +284,15 @@ int ds_twr_initiator_custom(void)
         /* === Lire accéléromètre (robuste) ===
          * Si l'init échoue au boot (ou plus tard), on retente périodiquement.
          */
-        if (!accel_ok)
+        uint8_t accel_decimation = test_profile_accel_decimation(active_test_profile);
+
+        if (accel_decimation == 0u)
+        {
+            accel_data.x = 0;
+            accel_data.y = 0;
+            accel_data.z = 0;
+        }
+        else if (!accel_ok)
         {
             accel_retry_div++;
             if ((accel_retry_div & 0x3Fu) == 0u)
@@ -261,9 +306,13 @@ int ds_twr_initiator_custom(void)
         }
         else
         {
-            if (!accel_read(&accel_data))
+            accel_sample_count++;
+            if ((accel_decimation == 1u) || ((accel_sample_count % accel_decimation) == 0u))
             {
-                accel_ok = false;
+                if (!accel_read(&accel_data))
+                {
+                    accel_ok = false;
+                }
             }
         }
 
@@ -278,6 +327,7 @@ int ds_twr_initiator_custom(void)
         tx_poll_msg[POLL_MSG_SWITCH_TOKEN_IDX] = switch_request_armed ? pending_switch_token : 0u;
         tx_poll_msg[POLL_MSG_ACQ_PERIOD_IDX] = acquisition_period_ms;
         tx_poll_msg[POLL_MSG_ACQ_TOKEN_IDX] = acq_request_armed ? pending_acq_token : 0u;
+        tx_poll_msg[POLL_MSG_TEST_PROFILE_IDX] = active_test_profile;
 
         /* === TX POLL === */
         tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
@@ -338,6 +388,29 @@ int ds_twr_initiator_custom(void)
                             acq_request_armed = true;
                         }
                     }
+
+                    if (frame_len > RESP_MSG_CTRL_TEST_PROFILE_IDX)
+                    {
+                        uint8_t announced_test_profile = rx_buffer[RESP_MSG_CTRL_TEST_PROFILE_IDX];
+                        if (is_supported_test_profile(announced_test_profile) && (announced_test_profile != active_test_profile))
+                        {
+                            active_test_profile = announced_test_profile;
+                            accel_sample_count = 0;
+                            test_run_info((unsigned char *)"TEST PROFILE APPLIED");
+                        }
+                    }
+
+                    /* Robust behavior: always follow responder-advertised acquisition period.
+                     * This avoids deadlocks in token-based coordination and keeps both sides aligned. */
+                    if (frame_len > RESP_MSG_CTRL_ACQ_MS_IDX)
+                    {
+                        uint8_t announced_period = rx_buffer[RESP_MSG_CTRL_ACQ_MS_IDX];
+                        if (is_supported_acq_period(announced_period) && (announced_period != acquisition_period_ms))
+                        {
+                            acquisition_period_ms = announced_period;
+                            test_run_info((unsigned char *)"UWB PERIOD APPLIED");
+                        }
+                    }
                 }
 
                 /* === PRÉPARER TX FINAL === */
@@ -347,7 +420,7 @@ int ds_twr_initiator_custom(void)
                 resp_rx_ts = ranging_get_rx_timestamp_u64();
 
                 /* Calculer le moment d'envoi du Final (delayed TX) */
-                final_tx_time = (resp_rx_ts + (RESP_RX_TO_FINAL_TX_DLY_UUS * UUS_TO_DWT_TIME)) >> 8;
+                final_tx_time = (resp_rx_ts + (active_profile->initiator_resp_rx_to_final_tx_dly_uus * UUS_TO_DWT_TIME)) >> 8;
                 dwt_setdelayedtrxtime(final_tx_time);
 
                 /* Le timestamp Final TX = temps programmé + antenna delay */

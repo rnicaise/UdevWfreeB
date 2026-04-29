@@ -7,7 +7,9 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.qorvo.uwbreceiver.data.RuntimeStore
+import com.qorvo.uwbreceiver.data.RangingMode
 import com.qorvo.uwbreceiver.data.SettingsStore
+import com.qorvo.uwbreceiver.data.TestProfile
 import com.qorvo.uwbreceiver.data.UwbUiState
 import com.qorvo.uwbreceiver.service.UwbForegroundService
 import kotlinx.coroutines.delay
@@ -101,35 +103,79 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun updateRangingMode(value: RangingMode) {
+        viewModelScope.launch {
+            settingsStore.updateRangingMode(value)
+        }
+    }
+
+    fun applyTestProfile(value: TestProfile) {
+        viewModelScope.launch {
+            settingsStore.updateTestProfile(value)
+            settingsStore.updateUwbDataRateKbps(6800)
+            settingsStore.updateRangingMode(RangingMode.DS_TWR)
+            when (value) {
+                TestProfile.FAST_DISTANCE_ONLY -> {
+                    settingsStore.updateMedianWindow(1)
+                    settingsStore.updateAcquisitionPeriodMs(1)
+                }
+                TestProfile.FAST_ACCEL_DECIMATED -> {
+                    settingsStore.updateMedianWindow(3)
+                    settingsStore.updateAcquisitionPeriodMs(1)
+                }
+                TestProfile.STABLE_FULL -> {
+                    settingsStore.updateMedianWindow(5)
+                    settingsStore.updateAcquisitionPeriodMs(20)
+                }
+                TestProfile.ROBUST_DETECTION -> {
+                    settingsStore.updateMedianWindow(7)
+                    settingsStore.updateAcquisitionPeriodMs(30)
+                }
+                TestProfile.DIAGNOSTICS_FULL -> {
+                    settingsStore.updateMedianWindow(1)
+                    settingsStore.updateAcquisitionPeriodMs(50)
+                }
+            }
+            delay(200)
+            sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
+        }
+    }
+
     fun applyUwbSettings() {
         sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
     }
 
     fun applyPreset20msStable() {
         viewModelScope.launch {
+            settingsStore.updateTestProfile(TestProfile.STABLE_FULL)
             settingsStore.updateMedianWindow(5)
             settingsStore.updateUwbDataRateKbps(6800)
             settingsStore.updateAcquisitionPeriodMs(20)
+            delay(200)
+            sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
         }
-        sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
     }
 
     fun applyPresetMaxSpeed() {
         viewModelScope.launch {
+            settingsStore.updateTestProfile(TestProfile.FAST_DISTANCE_ONLY)
             settingsStore.updateMedianWindow(3)
             settingsStore.updateUwbDataRateKbps(6800)
             settingsStore.updateAcquisitionPeriodMs(1)
+            delay(200)
+            sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
         }
-        sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
     }
 
     fun applyPresetOutdoorRobust() {
         viewModelScope.launch {
+            settingsStore.updateTestProfile(TestProfile.ROBUST_DETECTION)
             settingsStore.updateMedianWindow(7)
-            settingsStore.updateUwbDataRateKbps(850)
-            settingsStore.updateAcquisitionPeriodMs(20)
+            settingsStore.updateUwbDataRateKbps(6800)
+            settingsStore.updateAcquisitionPeriodMs(30)
+            delay(200)
+            sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
         }
-        sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
     }
 
     fun requestShare(uri: Uri?) {

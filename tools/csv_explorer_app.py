@@ -112,6 +112,26 @@ def make_monotonic_ms(series: pd.Series) -> pd.Series:
     return pd.Series(out, index=series.index)
 
 
+def compute_acquisition_hz(t_sec: pd.Series, sample_series: pd.Series | None) -> pd.Series:
+    t = pd.to_numeric(t_sec, errors="coerce").to_numpy(dtype=np.float64)
+    if sample_series is not None:
+        s = pd.to_numeric(sample_series, errors="coerce").to_numpy(dtype=np.float64)
+    else:
+        s = np.arange(len(t), dtype=np.float64)
+
+    hz = np.full_like(t, np.nan, dtype=np.float64)
+    for i in range(1, len(t)):
+        dt = t[i] - t[i - 1]
+        ds = s[i] - s[i - 1]
+        if not np.isfinite(dt) or dt <= 0:
+            continue
+        if not np.isfinite(ds):
+            continue
+        hz[i] = ds / dt
+
+    return pd.Series(hz, index=t_sec.index)
+
+
 def load_csv(file_obj) -> pd.DataFrame:
     df = pd.read_csv(file_obj)
     df.columns = [c.strip() for c in df.columns]
@@ -217,13 +237,15 @@ def app() -> None:
             work[cols.dist_plot] = pd.to_numeric(work[cols.dist_plot], errors="coerce").rolling(roll_win, min_periods=1).mean()
 
     st.subheader("Session Summary")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     dist_vals = pd.to_numeric(work[cols.dist_plot], errors="coerce")
+    hz_series = compute_acquisition_hz(x, work[cols.sample] if cols.sample and cols.sample in work.columns else None)
     c1.metric("Samples", f"{len(work)}")
     c2.metric("Distance mean", f"{dist_vals.mean():.3f} m")
     c3.metric("Distance std", f"{dist_vals.std(ddof=0):.3f} m")
     duration = float(x.iloc[-1] - x.iloc[0]) if len(x) > 1 else 0.0
     c4.metric("Duration", f"{duration:.1f} s")
+    c5.metric("Acq mean", f"{hz_series.mean():.2f} Hz")
     st.caption(f"Source: {source_name}")
 
     st.subheader("Distance")
@@ -233,6 +255,15 @@ def app() -> None:
     fig_dist.add_trace(go.Scatter(x=x, y=work[cols.dist_plot], mode="lines", name=cols.dist_plot, line=dict(width=2)))
     fig_dist.update_layout(height=320, margin=dict(l=30, r=30, t=20, b=30), xaxis_title="time (s)", yaxis_title="distance (m)")
     st.plotly_chart(fig_dist, use_container_width=True)
+
+    st.subheader("Acquisition Frequency")
+    hz_plot = hz_series
+    if roll_win > 1:
+        hz_plot = hz_plot.rolling(roll_win, min_periods=1).mean()
+    fig_hz = go.Figure()
+    fig_hz.add_trace(go.Scatter(x=x, y=hz_plot, mode="lines", name="acq_hz", line=dict(width=2, color="#5b8c5a")))
+    fig_hz.update_layout(height=300, margin=dict(l=30, r=30, t=20, b=30), xaxis_title="time (s)", yaxis_title="Hz")
+    st.plotly_chart(fig_hz, use_container_width=True)
 
     st.subheader("Acceleration and Distance Overlay")
     if all([cols.iax, cols.iay, cols.iaz]):

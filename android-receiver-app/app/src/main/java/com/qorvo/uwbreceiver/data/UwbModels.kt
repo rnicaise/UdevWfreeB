@@ -12,6 +12,10 @@ data class CsvSample(
     val rax: Int,
     val ray: Int,
     val raz: Int,
+    val responderAcquisitionPeriodMs: Int? = null,
+    val initiatorAcquisitionPeriodMs: Int? = null,
+    val responderProfileOpt: Int? = null,
+    val initiatorProfileOpt: Int? = null,
 )
 
 enum class LinkState {
@@ -46,7 +50,22 @@ data class UwbControlSettings(
     val medianWindow: Int = 5,
     val uwbDataRateKbps: Int = 6800,
     val acquisitionPeriodMs: Int = 20,
+    val rangingMode: RangingMode = RangingMode.DS_TWR,
+    val testProfile: TestProfile = TestProfile.STABLE_FULL,
 )
+
+enum class RangingMode {
+    DS_TWR,
+    SS_TWR,
+}
+
+enum class TestProfile {
+    FAST_DISTANCE_ONLY,
+    FAST_ACCEL_DECIMATED,
+    STABLE_FULL,
+    ROBUST_DETECTION,
+    DIAGNOSTICS_FULL,
+}
 
 data class PhoneTelemetry(
     val gyroX: Float? = null,

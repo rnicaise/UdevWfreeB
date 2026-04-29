@@ -170,6 +170,7 @@ set(SDK_SOURCES
 # Notre code
 set(PROJECT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/ranging.c
+    ${CMAKE_SOURCE_DIR}/src/common/uwb_profiles.c
 )
 
 # Sélection initiator ou responder

@@ -18,6 +18,8 @@ class SettingsStore(private val context: Context) {
     private val keyMedianWindow = intPreferencesKey("median_window")
     private val keyUwbDataRateKbps = intPreferencesKey("uwb_data_rate_kbps")
     private val keyAcquisitionPeriodMs = intPreferencesKey("acquisition_period_ms")
+    private val keyRangingMode = intPreferencesKey("ranging_mode")
+    private val keyTestProfile = intPreferencesKey("test_profile")
 
     val thresholds: Flow<DistanceThresholds> = context.dataStore.data.map { pref ->
         DistanceThresholds(
@@ -27,10 +29,14 @@ class SettingsStore(private val context: Context) {
     }
 
     val controls: Flow<UwbControlSettings> = context.dataStore.data.map { pref ->
+        val modeRaw = pref[keyRangingMode] ?: 0
+        val testProfileRaw = pref[keyTestProfile] ?: TestProfile.STABLE_FULL.ordinal
         UwbControlSettings(
             medianWindow = (pref[keyMedianWindow] ?: 5).coerceIn(1, 31),
-            uwbDataRateKbps = pref[keyUwbDataRateKbps] ?: 6800,
+            uwbDataRateKbps = 6800,
             acquisitionPeriodMs = (pref[keyAcquisitionPeriodMs] ?: 20).coerceIn(1, 200),
+            rangingMode = if (modeRaw == 1) RangingMode.SS_TWR else RangingMode.DS_TWR,
+            testProfile = TestProfile.entries.getOrElse(testProfileRaw) { TestProfile.STABLE_FULL },
         )
     }
 
@@ -54,13 +60,25 @@ class SettingsStore(private val context: Context) {
 
     suspend fun updateUwbDataRateKbps(value: Int) {
         context.dataStore.edit { pref ->
-            pref[keyUwbDataRateKbps] = if (value <= 850) 850 else 6800
+            pref[keyUwbDataRateKbps] = 6800
         }
     }
 
     suspend fun updateAcquisitionPeriodMs(value: Int) {
         context.dataStore.edit { pref ->
             pref[keyAcquisitionPeriodMs] = value.coerceIn(1, 200)
+        }
+    }
+
+    suspend fun updateRangingMode(value: RangingMode) {
+        context.dataStore.edit { pref ->
+            pref[keyRangingMode] = if (value == RangingMode.SS_TWR) 1 else 0
+        }
+    }
+
+    suspend fun updateTestProfile(value: TestProfile) {
+        context.dataStore.edit { pref ->
+            pref[keyTestProfile] = value.ordinal
         }
     }
 }
