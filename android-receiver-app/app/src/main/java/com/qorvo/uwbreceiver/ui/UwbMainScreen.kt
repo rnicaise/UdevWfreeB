@@ -276,6 +276,14 @@ fun UwbMainScreen(
                 Text("Preset actif: $presetName", color = TextSecondary)
                 Text("Test profile: ${testProfileLabel(state.controls.testProfile)}", color = TextSecondary)
 
+                Button(
+                    onClick = { onTestProfileChange(TestProfile.TURBO_DISTANCE_ONLY) },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = state.runtime.linkState == LinkState.CONNECTED,
+                ) {
+                    Text("Turbo exp")
+                }
+
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { onTestProfileChange(TestProfile.FAST_DISTANCE_ONLY) },
@@ -471,15 +479,18 @@ private fun formatDuration(sec: Long): String {
 
 private fun presetLabel(controls: UwbControlSettings): String {
     return when {
+        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 1 && controls.testProfile == TestProfile.TURBO_DISTANCE_ONLY -> "Turbo experimental"
+        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 1 && controls.testProfile == TestProfile.FAST_DISTANCE_ONLY -> "Max speed safe"
         controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 5 -> "20ms stable"
         controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 3 -> "Max speed"
-        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 7 -> "Outdoor robust"
+        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 30 && controls.medianWindow == 7 -> "Outdoor robust"
         else -> "Custom"
     }
 }
 
 private fun testProfileLabel(profile: TestProfile): String {
     return when (profile) {
+        TestProfile.TURBO_DISTANCE_ONLY -> "Turbo distance only"
         TestProfile.FAST_DISTANCE_ONLY -> "Fast distance only"
         TestProfile.FAST_ACCEL_DECIMATED -> "Fast + accel decimated"
         TestProfile.STABLE_FULL -> "Stable full telemetry"

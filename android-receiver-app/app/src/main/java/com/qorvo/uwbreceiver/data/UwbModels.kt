@@ -65,6 +65,7 @@ enum class TestProfile {
     STABLE_FULL,
     ROBUST_DETECTION,
     DIAGNOSTICS_FULL,
+    TURBO_DISTANCE_ONLY,
 }
 
 data class PhoneTelemetry(

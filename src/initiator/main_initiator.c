@@ -146,13 +146,14 @@ static bool is_supported_acq_period(uint8_t period_ms)
 
 static bool is_supported_test_profile(uint8_t profile)
 {
-    return profile <= UWB_TEST_PROFILE_DIAGNOSTICS_FULL;
+    return profile <= UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY;
 }
 
 static uint8_t test_profile_accel_decimation(uint8_t profile)
 {
     switch (profile)
     {
+        case UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY:
         case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
             return 0u;
         case UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED:

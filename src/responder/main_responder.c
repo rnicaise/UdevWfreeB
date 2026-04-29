@@ -136,13 +136,14 @@ static bool is_supported_acq_period(uint8_t period_ms)
 
 static bool is_supported_test_profile(uint8_t profile)
 {
-    return profile <= UWB_TEST_PROFILE_DIAGNOSTICS_FULL;
+    return profile <= UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY;
 }
 
 static uint8_t test_profile_accel_decimation(uint8_t profile)
 {
     switch (profile)
     {
+        case UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY:
         case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
             return 0u;
         case UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED:
@@ -160,6 +161,8 @@ static const char *test_profile_name(uint8_t profile)
 {
     switch (profile)
     {
+        case UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY:
+            return "TURBO_DISTANCE_ONLY";
         case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
             return "FAST_DISTANCE_ONLY";
         case UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED:
@@ -313,6 +316,11 @@ static bool parse_test_profile_command(const char *cmd, uint8_t *profile)
     }
 
     name = cmd + prefix_len;
+    if (strcmp(name, "TURBO_DISTANCE_ONLY") == 0)
+    {
+        *profile = UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY;
+        return true;
+    }
     if (strcmp(name, "FAST_DISTANCE_ONLY") == 0)
     {
         *profile = UWB_TEST_PROFILE_FAST_DISTANCE_ONLY;
@@ -686,7 +694,8 @@ int ds_twr_responder_custom(void)
 
                         {
                             uint32_t ms = (NRF_RTC2->COUNTER * 1000) / 32768;
-                            if (current_test_profile == UWB_TEST_PROFILE_FAST_DISTANCE_ONLY)
+                            if ((current_test_profile == UWB_TEST_PROFILE_FAST_DISTANCE_ONLY) ||
+                                (current_test_profile == UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY))
                             {
                                 snprintf(output_buf, sizeof(output_buf),
                                 "%lu,%lu,%.2f",

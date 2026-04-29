@@ -115,6 +115,10 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
             settingsStore.updateUwbDataRateKbps(6800)
             settingsStore.updateRangingMode(RangingMode.DS_TWR)
             when (value) {
+                TestProfile.TURBO_DISTANCE_ONLY -> {
+                    settingsStore.updateMedianWindow(1)
+                    settingsStore.updateAcquisitionPeriodMs(1)
+                }
                 TestProfile.FAST_DISTANCE_ONLY -> {
                     settingsStore.updateMedianWindow(1)
                     settingsStore.updateAcquisitionPeriodMs(1)
@@ -159,7 +163,7 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
     fun applyPresetMaxSpeed() {
         viewModelScope.launch {
             settingsStore.updateTestProfile(TestProfile.FAST_DISTANCE_ONLY)
-            settingsStore.updateMedianWindow(3)
+            settingsStore.updateMedianWindow(1)
             settingsStore.updateUwbDataRateKbps(6800)
             settingsStore.updateAcquisitionPeriodMs(1)
             delay(200)

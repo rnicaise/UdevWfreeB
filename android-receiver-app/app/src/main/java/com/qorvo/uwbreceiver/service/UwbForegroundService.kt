@@ -278,7 +278,7 @@ class UwbForegroundService : Service() {
             val port = driver.ports.firstOrNull() ?: return false
             port.open(connection)
             port.setParameters(
-                115200,
+                SERIAL_BAUD_RATE,
                 8,
                 UsbSerialPort.STOPBITS_1,
                 UsbSerialPort.PARITY_NONE,
@@ -631,6 +631,7 @@ class UwbForegroundService : Service() {
         private const val DISTANCE_ALERT_THRESHOLD_M = 1.0f
         private const val ALERT_BEEP_DURATION_MS = 250
         private const val ALERT_BEEP_PERIOD_MS = 300
+        private const val SERIAL_BAUD_RATE = 460800
         private const val COMMAND_BYTE_DELAY_MS = 15L
         private const val COMMAND_GAP_MS = 120L
 
