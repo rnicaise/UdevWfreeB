@@ -9,12 +9,23 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.hoho.android.usbserial.driver.UsbSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -22,8 +33,10 @@ import com.qorvo.uwbreceiver.MainActivity
 import com.qorvo.uwbreceiver.R
 import com.qorvo.uwbreceiver.data.CsvParser
 import com.qorvo.uwbreceiver.data.LinkState
+import com.qorvo.uwbreceiver.data.PhoneTelemetry
 import com.qorvo.uwbreceiver.data.RecordingManager
 import com.qorvo.uwbreceiver.data.RuntimeStore
+import com.qorvo.uwbreceiver.data.SettingsStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -41,9 +54,13 @@ class UwbForegroundService : Service() {
 
     private lateinit var usbManager: UsbManager
     private lateinit var recordingManager: RecordingManager
+    private lateinit var settingsStore: SettingsStore
+    private lateinit var sensorManager: SensorManager
+    private lateinit var locationManager: LocationManager
 
     private var connectJob: Job? = null
     private var readJob: Job? = null
+    private var settingsJob: Job? = null
 
     private var shouldConnect = false
 
@@ -51,6 +68,44 @@ class UwbForegroundService : Service() {
     private var activePort: UsbSerialPort? = null
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var toneGenerator: ToneGenerator? = null
+    private var alertJob: Job? = null
+    private var distanceAlertActive = false
+
+    private var medianWindow = 5
+    private var requestedUwbDataRateKbps = 6800
+    private var requestedAcquisitionPeriodMs = 20
+    private var lastAppliedUwbDataRateKbps: Int? = null
+    private val distWindow = ArrayDeque<Float>()
+
+    @Volatile
+    private var latestGyroX: Float? = null
+    @Volatile
+    private var latestGyroY: Float? = null
+    @Volatile
+    private var latestGyroZ: Float? = null
+    @Volatile
+    private var latestLocation: Location? = null
+
+    private val gyroListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent?) {
+            if (event == null || event.values.size < 3) {
+                return
+            }
+            latestGyroX = event.values[0]
+            latestGyroY = event.values[1]
+            latestGyroZ = event.values[2]
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
+            (sensor)
+            (accuracy)
+        }
+    }
+
+    private val locationListener = LocationListener { location ->
+        latestLocation = location
+    }
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -84,12 +139,22 @@ class UwbForegroundService : Service() {
         super.onCreate()
         usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
         recordingManager = RecordingManager(applicationContext)
+        settingsStore = SettingsStore(applicationContext)
+        sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        toneGenerator = try {
+            ToneGenerator(AudioManager.STREAM_ALARM, 100)
+        } catch (_: Exception) {
+            null
+        }
 
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification("Idle", recording = false))
 
         acquireWakeLock()
         registerUsbReceiver()
+        startPhoneTelemetry()
+        startSettingsObserver()
 
         serviceScope.launch {
             RuntimeStore.state.collectLatest { state ->
@@ -115,6 +180,7 @@ class UwbForegroundService : Service() {
             ACTION_DISCONNECT -> {
                 shouldConnect = false
                 stopRecordingInternal()
+                stopDistanceAlert()
                 closePort()
                 RuntimeStore.setLinkState(LinkState.DISCONNECTED, "Disconnected")
                 stopSelf()
@@ -122,6 +188,7 @@ class UwbForegroundService : Service() {
 
             ACTION_START_RECORDING -> startRecordingInternal()
             ACTION_STOP_RECORDING -> stopRecordingInternal()
+            ACTION_APPLY_UWB_SETTINGS -> applyUwbSettings()
         }
 
         return START_STICKY
@@ -130,14 +197,19 @@ class UwbForegroundService : Service() {
     override fun onDestroy() {
         shouldConnect = false
         stopRecordingInternal()
+        stopDistanceAlert()
         closePort()
 
         connectJob?.cancel()
         readJob?.cancel()
+        settingsJob?.cancel()
         serviceScope.cancel()
 
+        stopPhoneTelemetry()
         unregisterReceiverSafe()
         releaseWakeLock()
+        toneGenerator?.release()
+        toneGenerator = null
 
         super.onDestroy()
     }
@@ -208,6 +280,7 @@ class UwbForegroundService : Service() {
             activeDriver = driver
             activePort = port
             RuntimeStore.onConnected("USB connected")
+            applyUwbSettings()
             startReadLoop(port)
             true
         } catch (e: Exception) {
@@ -255,19 +328,110 @@ class UwbForegroundService : Service() {
             return
         }
 
+        if (line.startsWith("ACK,") || line.startsWith("ERR,")) {
+            RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, line)
+            return
+        }
+
         val sample = CsvParser.parse(line)
         if (sample == null) {
             RuntimeStore.onInvalidLine()
             return
         }
 
-        RuntimeStore.onSample(sample)
-        recordingManager.appendRawLine(line)
+        val filtered = filterDistance(sample.dist)
+        updateDistanceAlert(filtered)
+        val phoneTelemetry = snapshotPhoneTelemetry()
+
+        RuntimeStore.onSample(sample, filtered, phoneTelemetry)
+        recordingManager.appendEnrichedSample(sample, filtered, phoneTelemetry)
+    }
+
+    private fun filterDistance(rawDistance: Float): Float {
+        distWindow.addLast(rawDistance)
+        while (distWindow.size > medianWindow.coerceAtLeast(1)) {
+            distWindow.removeFirst()
+        }
+
+        val sorted = distWindow.toMutableList().sorted()
+        if (sorted.isEmpty()) {
+            return rawDistance
+        }
+
+        val mid = sorted.size / 2
+        return if (sorted.size % 2 == 1) {
+            sorted[mid]
+        } else {
+            (sorted[mid - 1] + sorted[mid]) / 2f
+        }
+    }
+
+    private fun snapshotPhoneTelemetry(): PhoneTelemetry {
+        val loc = latestLocation
+        val nowElapsed = android.os.SystemClock.elapsedRealtime()
+        val fixElapsed = loc?.elapsedRealtimeNanos?.let { nanos ->
+            nowElapsed - (nanos / 1_000_000L)
+        }
+
+        return PhoneTelemetry(
+            gyroX = latestGyroX,
+            gyroY = latestGyroY,
+            gyroZ = latestGyroZ,
+            latitude = loc?.latitude,
+            longitude = loc?.longitude,
+            altitudeM = loc?.altitude,
+            speedMps = loc?.speed,
+            fixElapsedMs = fixElapsed,
+        )
+    }
+
+    private fun startSettingsObserver() {
+        settingsJob?.cancel()
+        settingsJob = serviceScope.launch {
+            settingsStore.controls.collectLatest { controls ->
+                val previousMedian = medianWindow
+                medianWindow = controls.medianWindow.coerceAtLeast(1)
+                requestedUwbDataRateKbps = controls.uwbDataRateKbps
+                requestedAcquisitionPeriodMs = controls.acquisitionPeriodMs
+                if (medianWindow != previousMedian) {
+                    distWindow.clear()
+                }
+            }
+        }
+    }
+
+    private fun applyUwbSettings() {
+        val sentRate = sendCommand("CFG,UWB_DATARATE_KBPS=$requestedUwbDataRateKbps\n")
+        val sentPeriod = sendCommand("CFG,ACQ_PERIOD_MS=$requestedAcquisitionPeriodMs\n")
+
+        if (sentRate && sentPeriod) {
+            lastAppliedUwbDataRateKbps = requestedUwbDataRateKbps
+            RuntimeStore.setLinkState(
+                RuntimeStore.state.value.linkState,
+                "Applied UWB: ${requestedUwbDataRateKbps} kbps, ${requestedAcquisitionPeriodMs} ms"
+            )
+        } else {
+            RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "UWB cmd pending (connect first)")
+        }
+    }
+
+    private fun sendCommand(command: String): Boolean {
+        val port = activePort ?: return false
+        return try {
+            val payload = command.toByteArray(Charsets.US_ASCII)
+            port.write(payload, 200)
+            Timber.i("Sent command: %s", command.trim())
+            true
+        } catch (e: Exception) {
+            Timber.w(e, "Failed to send command")
+            false
+        }
     }
 
     private fun closePort() {
         readJob?.cancel()
         readJob = null
+        stopDistanceAlert()
 
         try {
             activePort?.close()
@@ -275,6 +439,40 @@ class UwbForegroundService : Service() {
         }
         activePort = null
         activeDriver = null
+    }
+
+    private fun updateDistanceAlert(filteredDistanceM: Float) {
+        if (filteredDistanceM > DISTANCE_ALERT_THRESHOLD_M) {
+            startDistanceAlert()
+        } else {
+            stopDistanceAlert()
+        }
+    }
+
+    private fun startDistanceAlert() {
+        if (distanceAlertActive) {
+            return
+        }
+
+        distanceAlertActive = true
+        alertJob?.cancel()
+        alertJob = serviceScope.launch {
+            while (isActive && distanceAlertActive) {
+                toneGenerator?.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, ALERT_BEEP_DURATION_MS)
+                delay(ALERT_BEEP_PERIOD_MS.toLong())
+            }
+        }
+    }
+
+    private fun stopDistanceAlert() {
+        if (!distanceAlertActive && alertJob == null) {
+            return
+        }
+
+        distanceAlertActive = false
+        alertJob?.cancel()
+        alertJob = null
+        toneGenerator?.stopTone()
     }
 
     private fun startRecordingInternal() {
@@ -295,6 +493,35 @@ class UwbForegroundService : Service() {
         if (savedUri != null) {
             RuntimeStore.setLastSavedUri(savedUri)
         }
+    }
+
+    private fun startPhoneTelemetry() {
+        val gyro = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
+        if (gyro != null) {
+            sensorManager.registerListener(gyroListener, gyro, SensorManager.SENSOR_DELAY_GAME)
+        }
+
+        if (hasLocationPermission()) {
+            try {
+                locationManager.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, locationListener)
+                locationManager.requestLocationUpdates(LocationManager.NETWORK_PROVIDER, 2000L, 0f, locationListener)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun stopPhoneTelemetry() {
+        sensorManager.unregisterListener(gyroListener)
+        try {
+            locationManager.removeUpdates(locationListener)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun hasLocationPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarse = ContextCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return fine || coarse
     }
 
     private fun registerUsbReceiver() {
@@ -370,11 +597,15 @@ class UwbForegroundService : Service() {
     companion object {
         private const val CHANNEL_ID = "uwb-acquisition"
         private const val NOTIF_ID = 42
+        private const val DISTANCE_ALERT_THRESHOLD_M = 1.0f
+        private const val ALERT_BEEP_DURATION_MS = 250
+        private const val ALERT_BEEP_PERIOD_MS = 300
 
         const val ACTION_CONNECT = "com.qorvo.uwbreceiver.action.CONNECT"
         const val ACTION_DISCONNECT = "com.qorvo.uwbreceiver.action.DISCONNECT"
         const val ACTION_START_RECORDING = "com.qorvo.uwbreceiver.action.START_RECORDING"
         const val ACTION_STOP_RECORDING = "com.qorvo.uwbreceiver.action.STOP_RECORDING"
+        const val ACTION_APPLY_UWB_SETTINGS = "com.qorvo.uwbreceiver.action.APPLY_UWB_SETTINGS"
 
         private const val ACTION_USB_PERMISSION = "com.qorvo.uwbreceiver.action.USB_PERMISSION"
     }

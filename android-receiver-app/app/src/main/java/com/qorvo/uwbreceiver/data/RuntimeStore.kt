@@ -12,6 +12,7 @@ object RuntimeStore {
 
     private var hzWindowStartElapsed = 0L
     private var hzWindowStartSample = 0L
+    private val distanceHistory = ArrayDeque<Pair<Long, Float>>()
 
     @Synchronized
     fun setLinkState(linkState: LinkState, status: String) {
@@ -19,6 +20,7 @@ object RuntimeStore {
         _state.value = current.copy(linkState = linkState, status = status)
         if (linkState != LinkState.CONNECTED) {
             hzWindowStartElapsed = 0L
+            distanceHistory.clear()
         }
     }
 
@@ -36,7 +38,7 @@ object RuntimeStore {
     }
 
     @Synchronized
-    fun onSample(sample: CsvSample) {
+    fun onSample(sample: CsvSample, displayDist: Float, phoneTelemetry: PhoneTelemetry) {
         val now = SystemClock.elapsedRealtime()
         val current = _state.value
         var hz = current.hz
@@ -54,11 +56,49 @@ object RuntimeStore {
             }
         }
 
+        distanceHistory.addLast(now to displayDist)
+        while (distanceHistory.isNotEmpty() && (now - distanceHistory.first().first > 30_000L)) {
+            distanceHistory.removeFirst()
+        }
+
+        val std5s = computeStd(now, 5_000L)
+        val std30s = computeStd(now, 30_000L)
+
         _state.value = current.copy(
             latest = sample,
+            displayDist = displayDist,
+            std5s = std5s,
+            std30s = std30s,
+            phoneTelemetry = phoneTelemetry,
             samples = sample.sample,
             hz = hz,
         )
+    }
+
+    private fun computeStd(now: Long, windowMs: Long): Float? {
+        var n = 0
+        var sum = 0.0
+        var sumSq = 0.0
+
+        for ((ts, value) in distanceHistory) {
+            if (now - ts <= windowMs) {
+                val v = value.toDouble()
+                n++
+                sum += v
+                sumSq += v * v
+            }
+        }
+
+        if (n < 2) {
+            return null
+        }
+
+        val mean = sum / n
+        var variance = (sumSq / n) - (mean * mean)
+        if (variance < 0.0) {
+            variance = 0.0
+        }
+        return kotlin.math.sqrt(variance).toFloat()
     }
 
     @Synchronized

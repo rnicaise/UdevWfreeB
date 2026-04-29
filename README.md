@@ -3,11 +3,18 @@
 Système de mesure de distance UWB entre deux modules Qorvo DW3000,
 basé sur le protocole Double-Sided Two-Way Ranging (DS-TWR).
 
+## Guide développeur détaillé
+
+Pour une explication pas à pas du code embarqué (niveau débutant C), lire:
+
+- [README_DEV.md](README_DEV.md)
+
 ## Architecture du projet
 
 ```
 uwb-ranging/
 ├── README.md                  ← ce fichier
+├── README_DEV.md              ← guide dev détaillé (débutant C)
 ├── CMakeLists.txt             ← build principal (pointe vers le SDK)
 ├── CMakePresets.json           ← presets de build (debug/release)
 │
@@ -21,9 +28,6 @@ uwb-ranging/
 │   └── common/
 │       ├── ranging.h           ← types et constantes partagés
 │       └── ranging.c           ← fonctions utilitaires partagées
-│
-└── docs/
-    └── ARCHITECTURE.md         ← explication détaillée du protocole
 ```
 
 ## Comment ça fonctionne

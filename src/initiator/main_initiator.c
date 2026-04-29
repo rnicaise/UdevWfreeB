@@ -31,6 +31,23 @@
 #include "../common/ranging.h"
 #include "../accel/accel.h"
 
+#define UWB_PROFILE_OPT_850K 3u
+#define UWB_PROFILE_OPT_6M8  35u
+
+#define POLL_MSG_PROFILE_IDX      16
+#define POLL_MSG_SWITCH_TOKEN_IDX 17
+#define POLL_MSG_ACQ_PERIOD_IDX   18
+#define POLL_MSG_ACQ_TOKEN_IDX    19
+
+#define RESP_MSG_CTRL_OPT_IDX   11
+#define RESP_MSG_CTRL_TOKEN_IDX 12
+#define RESP_MSG_CTRL_FLAGS_IDX 13
+#define RESP_MSG_CTRL_ACQ_MS_IDX 14
+#define RESP_MSG_CTRL_ACQ_TOKEN_IDX 15
+
+#define RESP_FLAG_SWITCH_PENDING 0x01u
+#define RESP_FLAG_ACQ_PENDING    0x02u
+
 /* ── Trames du protocole ── */
 
 /* Poll : envoyé par l'initiator pour démarrer l'échange
@@ -44,7 +61,11 @@ static uint8_t tx_poll_msg[] = {
     FUNC_CODE_POLL,       /* Function code = 0x21 */
     0, 0,                 /* [10-11] accel X (int16 LE, mg) */
     0, 0,                 /* [12-13] accel Y */
-    0, 0                  /* [14-15] accel Z */
+    0, 0,                 /* [14-15] accel Z */
+    UWB_PROFILE_OPT_6M8,  /* [16] profile option used by initiator */
+    0,                    /* [17] rate switch token */
+    RNG_DELAY_MS,         /* [18] acquisition period currently applied (ms) */
+    0                     /* [19] period switch token */
 };
 
 /* Response attendu du responder */
@@ -90,6 +111,16 @@ static accel_data_t accel_data;
 static bool accel_ok = false;
 static uint32_t accel_retry_div = 0;
 
+static uint8_t acquisition_period_ms = RNG_DELAY_MS;
+
+static uint8_t current_profile_opt = UWB_PROFILE_OPT_6M8;
+static uint8_t pending_profile_opt = UWB_PROFILE_OPT_6M8;
+static uint8_t pending_switch_token = 0;
+static bool switch_request_armed = false;
+static uint8_t pending_acq_period_ms = RNG_DELAY_MS;
+static uint8_t pending_acq_token = 0;
+static bool acq_request_armed = false;
+
 /* ── Config UWB (depuis le SDK) ── */
 extern dwt_config_t config_options;
 extern dwt_txconfig_t txconfig_options;
@@ -97,6 +128,48 @@ extern dwt_txconfig_t txconfig_options_ch9;
 
 /* ── Fonction UART/debug ── */
 extern void test_run_info(unsigned char *data);
+
+static bool is_supported_profile_opt(uint8_t opt)
+{
+    return (opt == UWB_PROFILE_OPT_6M8) || (opt == UWB_PROFILE_OPT_850K);
+}
+
+static bool is_supported_acq_period(uint8_t period_ms)
+{
+    return (period_ms >= 1u) && (period_ms <= 200u);
+}
+
+static int apply_profile_option(uint8_t opt)
+{
+    if (!is_supported_profile_opt(opt))
+    {
+        return DWT_ERROR;
+    }
+
+    config_options.dataRate = (opt == UWB_PROFILE_OPT_850K) ? DWT_BR_850K : DWT_BR_6M8;
+
+    if (dwt_configure(&config_options))
+    {
+        return DWT_ERROR;
+    }
+
+    if (config_options.chan == 5)
+    {
+        dwt_configuretxrf(&txconfig_options);
+    }
+    else
+    {
+        dwt_configuretxrf(&txconfig_options_ch9);
+    }
+
+    dwt_setrxantennadelay(RX_ANT_DLY);
+    dwt_settxantennadelay(TX_ANT_DLY);
+    dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
+    dwt_setrxtimeout(RESP_RX_TIMEOUT_UUS);
+    dwt_setpreambledetecttimeout(PRE_TIMEOUT);
+
+    return DWT_SUCCESS;
+}
 
 /*
  * Point d'entrée du firmware initiator.
@@ -201,6 +274,10 @@ int ds_twr_initiator_custom(void)
         tx_poll_msg[POLL_MSG_ACCEL_Y_IDX + 1]  = (uint8_t)((accel_data.y >> 8) & 0xFF);
         tx_poll_msg[POLL_MSG_ACCEL_Z_IDX]      = (uint8_t)(accel_data.z & 0xFF);
         tx_poll_msg[POLL_MSG_ACCEL_Z_IDX + 1]  = (uint8_t)((accel_data.z >> 8) & 0xFF);
+        tx_poll_msg[POLL_MSG_PROFILE_IDX] = current_profile_opt;
+        tx_poll_msg[POLL_MSG_SWITCH_TOKEN_IDX] = switch_request_armed ? pending_switch_token : 0u;
+        tx_poll_msg[POLL_MSG_ACQ_PERIOD_IDX] = acquisition_period_ms;
+        tx_poll_msg[POLL_MSG_ACQ_TOKEN_IDX] = acq_request_armed ? pending_acq_token : 0u;
 
         /* === TX POLL === */
         tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
@@ -236,6 +313,33 @@ int ds_twr_initiator_custom(void)
                 uint32_t final_tx_time;
                 int ret;
 
+                if (frame_len > RESP_MSG_CTRL_FLAGS_IDX)
+                {
+                    uint8_t ctrl_flags = rx_buffer[RESP_MSG_CTRL_FLAGS_IDX];
+                    uint8_t ctrl_opt = rx_buffer[RESP_MSG_CTRL_OPT_IDX];
+                    uint8_t ctrl_token = rx_buffer[RESP_MSG_CTRL_TOKEN_IDX];
+
+                    if ((ctrl_flags & RESP_FLAG_SWITCH_PENDING) && is_supported_profile_opt(ctrl_opt) && (ctrl_token != 0u) && (ctrl_opt != current_profile_opt))
+                    {
+                        pending_profile_opt = ctrl_opt;
+                        pending_switch_token = ctrl_token;
+                        switch_request_armed = true;
+                    }
+
+                    if ((frame_len > RESP_MSG_CTRL_ACQ_TOKEN_IDX) && (ctrl_flags & RESP_FLAG_ACQ_PENDING))
+                    {
+                        uint8_t acq_period = rx_buffer[RESP_MSG_CTRL_ACQ_MS_IDX];
+                        uint8_t acq_token = rx_buffer[RESP_MSG_CTRL_ACQ_TOKEN_IDX];
+
+                        if (is_supported_acq_period(acq_period) && (acq_token != 0u) && (acq_period != acquisition_period_ms))
+                        {
+                            pending_acq_period_ms = acq_period;
+                            pending_acq_token = acq_token;
+                            acq_request_armed = true;
+                        }
+                    }
+                }
+
                 /* === PRÉPARER TX FINAL === */
 
                 /* Lire timestamps locaux */
@@ -270,6 +374,23 @@ int ds_twr_initiator_custom(void)
                     frame_seq_nb++;
                     ranging_count++;
 
+                    if (switch_request_armed && (pending_switch_token != 0u) && (tx_poll_msg[POLL_MSG_SWITCH_TOKEN_IDX] == pending_switch_token))
+                    {
+                        if (apply_profile_option(pending_profile_opt) == DWT_SUCCESS)
+                        {
+                            current_profile_opt = pending_profile_opt;
+                            switch_request_armed = false;
+                            test_run_info((unsigned char *)"UWB RATE SWITCHED");
+                        }
+                    }
+
+                    if (acq_request_armed && (pending_acq_token != 0u) && (tx_poll_msg[POLL_MSG_ACQ_TOKEN_IDX] == pending_acq_token) && is_supported_acq_period(pending_acq_period_ms))
+                    {
+                        acquisition_period_ms = pending_acq_period_ms;
+                        acq_request_armed = false;
+                        test_run_info((unsigned char *)"UWB PERIOD SWITCHED");
+                    }
+
                     /* Hot path: no per-frame debug prints to maximize ranging rate. */
                 }
                 else
@@ -283,6 +404,6 @@ int ds_twr_initiator_custom(void)
             dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
         }
 
-        Sleep(RNG_DELAY_MS);
+        Sleep(acquisition_period_ms);
     }
 }

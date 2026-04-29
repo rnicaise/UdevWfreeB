@@ -32,13 +32,15 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
     val uiState = combine(
         RuntimeStore.state,
         settingsStore.thresholds,
+        settingsStore.controls,
         ticker,
-    ) { runtime, thresholds, _ ->
+    ) { runtime, thresholds, controls, _ ->
         val nowElapsed = android.os.SystemClock.elapsedRealtime()
         val elapsed = runtime.sessionStartElapsedMs?.let { (nowElapsed - it) / 1000 } ?: 0
         UwbUiState(
             runtime = runtime,
             thresholds = thresholds,
+            controls = controls,
             elapsedSec = elapsed,
         )
     }.stateIn(
@@ -79,6 +81,55 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settingsStore.updateOrangeMax(value)
         }
+    }
+
+    fun updateMedianWindow(value: Int) {
+        viewModelScope.launch {
+            settingsStore.updateMedianWindow(value)
+        }
+    }
+
+    fun updateUwbDataRateKbps(value: Int) {
+        viewModelScope.launch {
+            settingsStore.updateUwbDataRateKbps(value)
+        }
+    }
+
+    fun updateAcquisitionPeriodMs(value: Int) {
+        viewModelScope.launch {
+            settingsStore.updateAcquisitionPeriodMs(value)
+        }
+    }
+
+    fun applyUwbSettings() {
+        sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
+    }
+
+    fun applyPreset20msStable() {
+        viewModelScope.launch {
+            settingsStore.updateMedianWindow(5)
+            settingsStore.updateUwbDataRateKbps(6800)
+            settingsStore.updateAcquisitionPeriodMs(20)
+        }
+        sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
+    }
+
+    fun applyPresetMaxSpeed() {
+        viewModelScope.launch {
+            settingsStore.updateMedianWindow(3)
+            settingsStore.updateUwbDataRateKbps(6800)
+            settingsStore.updateAcquisitionPeriodMs(1)
+        }
+        sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
+    }
+
+    fun applyPresetOutdoorRobust() {
+        viewModelScope.launch {
+            settingsStore.updateMedianWindow(7)
+            settingsStore.updateUwbDataRateKbps(850)
+            settingsStore.updateAcquisitionPeriodMs(20)
+        }
+        sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
     }
 
     fun requestShare(uri: Uri?) {

@@ -19,17 +19,22 @@ import com.qorvo.uwbreceiver.viewmodel.UwbViewModel
 class MainActivity : ComponentActivity() {
     private val viewModel: UwbViewModel by viewModels()
 
-    private val notificationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission(),
+    private val permissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
     ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        val permissions = mutableListOf(
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.ACCESS_FINE_LOCATION,
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
+        permissionsLauncher.launch(permissions.toTypedArray())
 
         setContent {
             UwbReceiverTheme {
@@ -45,6 +50,13 @@ class MainActivity : ComponentActivity() {
                     onShare = { viewModel.requestShare(uiState.runtime.lastSavedUri) },
                     onGreenChange = viewModel::updateGreenMax,
                     onOrangeChange = viewModel::updateOrangeMax,
+                    onMedianWindowChange = viewModel::updateMedianWindow,
+                    onUwbDataRateChange = viewModel::updateUwbDataRateKbps,
+                    onAcquisitionPeriodChange = viewModel::updateAcquisitionPeriodMs,
+                    onPreset20msStable = viewModel::applyPreset20msStable,
+                    onPresetMaxSpeed = viewModel::applyPresetMaxSpeed,
+                    onPresetOutdoorRobust = viewModel::applyPresetOutdoorRobust,
+                    onApplyUwbSettings = viewModel::applyUwbSettings,
                 )
 
                 LaunchedEffect(shareUri) {

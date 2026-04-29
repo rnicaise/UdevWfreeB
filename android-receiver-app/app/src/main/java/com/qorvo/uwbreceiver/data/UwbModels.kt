@@ -24,6 +24,10 @@ data class RuntimeState(
     val linkState: LinkState = LinkState.DISCONNECTED,
     val status: String = "Idle",
     val latest: CsvSample? = null,
+    val displayDist: Float? = null,
+    val std5s: Float? = null,
+    val std30s: Float? = null,
+    val phoneTelemetry: PhoneTelemetry = PhoneTelemetry(),
     val samples: Long = 0,
     val hz: Float = 0f,
     val sessionStartElapsedMs: Long? = null,
@@ -38,8 +42,26 @@ data class DistanceThresholds(
     val orangeMax: Float = 2.0f,
 )
 
+data class UwbControlSettings(
+    val medianWindow: Int = 5,
+    val uwbDataRateKbps: Int = 6800,
+    val acquisitionPeriodMs: Int = 20,
+)
+
+data class PhoneTelemetry(
+    val gyroX: Float? = null,
+    val gyroY: Float? = null,
+    val gyroZ: Float? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+    val altitudeM: Double? = null,
+    val speedMps: Float? = null,
+    val fixElapsedMs: Long? = null,
+)
+
 data class UwbUiState(
     val runtime: RuntimeState = RuntimeState(),
     val thresholds: DistanceThresholds = DistanceThresholds(),
+    val controls: UwbControlSettings = UwbControlSettings(),
     val elapsedSec: Long = 0,
 )

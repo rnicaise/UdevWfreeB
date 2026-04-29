@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.qorvo.uwbreceiver.data.CsvSample
 import com.qorvo.uwbreceiver.data.LinkState
+import com.qorvo.uwbreceiver.data.UwbControlSettings
 import com.qorvo.uwbreceiver.data.UwbUiState
 import com.qorvo.uwbreceiver.ui.theme.GreenGood
 import com.qorvo.uwbreceiver.ui.theme.OrangeWarn
@@ -54,9 +55,17 @@ fun UwbMainScreen(
     onShare: () -> Unit,
     onGreenChange: (Float) -> Unit,
     onOrangeChange: (Float) -> Unit,
+    onMedianWindowChange: (Int) -> Unit,
+    onUwbDataRateChange: (Int) -> Unit,
+    onAcquisitionPeriodChange: (Int) -> Unit,
+    onPreset20msStable: () -> Unit,
+    onPresetMaxSpeed: () -> Unit,
+    onPresetOutdoorRobust: () -> Unit,
+    onApplyUwbSettings: () -> Unit,
 ) {
     val sample = state.runtime.latest
-    val distance = sample?.dist ?: 0f
+    val rawDistance = sample?.dist ?: 0f
+    val distance = state.runtime.displayDist ?: rawDistance
     val maxGauge = (state.thresholds.orangeMax + 1.0f).coerceAtLeast(1.5f)
 
     val gaugeProgress = (distance / maxGauge).coerceIn(0f, 1f)
@@ -87,6 +96,10 @@ fun UwbMainScreen(
             )
             Text(
                 text = "USB OTG live acquisition",
+                color = TextSecondary,
+            )
+            Text(
+                text = "std(5s): ${state.runtime.std5s?.let { String.format("%.3f m", it) } ?: "--"} | std(30s): ${state.runtime.std30s?.let { String.format("%.3f m", it) } ?: "--"}",
                 color = TextSecondary,
             )
         }
@@ -141,6 +154,12 @@ fun UwbMainScreen(
                     text = "Thresholds: green <= ${state.thresholds.greenMax}m, orange <= ${state.thresholds.orangeMax}m",
                     color = TextSecondary,
                 )
+                if (sample != null) {
+                    Text(
+                        text = "Raw ${String.format("%.2f", rawDistance)} m | Filtered ${String.format("%.2f", distance)} m",
+                        color = TextSecondary,
+                    )
+                }
             }
         }
 
@@ -162,12 +181,35 @@ fun UwbMainScreen(
                 Text("Session", fontWeight = FontWeight.Bold)
                 StatRow("Connection", state.runtime.linkState.name)
                 StatRow("Status", state.runtime.status)
-                StatRow("Hz", String.format("%.1f", state.runtime.hz))
+                StatRow("Real Hz", String.format("%.1f", state.runtime.hz))
                 StatRow("Samples", state.runtime.samples.toString())
                 StatRow("Duration", formatDuration(state.elapsedSec))
                 StatRow("Recording", if (state.runtime.recording) "ON" else "OFF")
                 StatRow("File", state.runtime.recordingName ?: "-")
                 StatRow("Invalid lines", state.runtime.invalidLines.toString())
+            }
+        }
+
+        item {
+            CardBlock {
+                Text("Phone sensors", fontWeight = FontWeight.Bold)
+                val phone = state.runtime.phoneTelemetry
+                StatRow(
+                    "Gyro rad/s",
+                    listOf(phone.gyroX, phone.gyroY, phone.gyroZ)
+                        .joinToString(",") { v -> if (v == null) "--" else String.format("%.2f", v) }
+                )
+                StatRow(
+                    "GPS",
+                    if (phone.latitude == null || phone.longitude == null) {
+                        "no fix"
+                    } else {
+                        String.format("%.6f, %.6f", phone.latitude, phone.longitude)
+                    },
+                )
+                StatRow("Alt m", phone.altitudeM?.let { String.format("%.1f", it) } ?: "--")
+                StatRow("Speed m/s", phone.speedMps?.let { String.format("%.2f", it) } ?: "--")
+                StatRow("GPS age ms", phone.fixElapsedMs?.toString() ?: "--")
             }
         }
 
@@ -215,6 +257,90 @@ fun UwbMainScreen(
                     value = state.thresholds.orangeMax,
                     onValueChange = { onOrangeChange(it.coerceAtLeast(state.thresholds.greenMax + 0.1f)) },
                     valueRange = 0.2f..7.0f,
+                )
+            }
+        }
+
+        item {
+            CardBlock {
+                Text("UWB controls", fontWeight = FontWeight.Bold)
+                val presetName = presetLabel(state.controls)
+                Text("Preset actif: $presetName", color = TextSecondary)
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onPreset20msStable,
+                        modifier = Modifier.weight(1f),
+                        enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    ) {
+                        Text("20ms stable")
+                    }
+                    Button(
+                        onClick = onPresetMaxSpeed,
+                        modifier = Modifier.weight(1f),
+                        enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    ) {
+                        Text("Max speed")
+                    }
+                }
+                Button(
+                    onClick = onPresetOutdoorRobust,
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = state.runtime.linkState == LinkState.CONNECTED,
+                ) {
+                    Text("Outdoor robust")
+                }
+
+                Text("Median window: ${state.controls.medianWindow}", color = TextSecondary)
+                Slider(
+                    value = state.controls.medianWindow.toFloat(),
+                    onValueChange = { onMedianWindowChange(it.toInt().coerceIn(1, 31)) },
+                    valueRange = 1f..31f,
+                )
+
+                Text(
+                    "Requested UWB data rate: ${state.controls.uwbDataRateKbps} kbps",
+                    color = TextSecondary,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onUwbDataRateChange(850) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("850 kbps")
+                    }
+                    Button(
+                        onClick = { onUwbDataRateChange(6800) },
+                        modifier = Modifier.weight(1f),
+                    ) {
+                        Text("6.8 Mbps")
+                    }
+                }
+
+                Text(
+                    "Acquisition period target: ${state.controls.acquisitionPeriodMs} ms (${String.format("%.1f", 1000f / state.controls.acquisitionPeriodMs)} Hz target)",
+                    color = TextSecondary,
+                )
+                Slider(
+                    value = state.controls.acquisitionPeriodMs.toFloat(),
+                    onValueChange = { onAcquisitionPeriodChange(it.toInt().coerceIn(1, 200)) },
+                    valueRange = 1f..200f,
+                )
+
+                Button(
+                    onClick = onApplyUwbSettings,
+                    enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Apply UWB settings")
+                }
+                Text(
+                    text = "Note: data-rate command requires firmware command support.",
+                    color = TextSecondary,
+                )
+                Text(
+                    text = "Note: Real Hz est la fréquence réellement observée, elle dépend du débit radio, des timeouts et de l'environnement.",
+                    color = TextSecondary,
                 )
             }
         }
@@ -271,4 +397,13 @@ private fun formatDuration(sec: Long): String {
     val m = (sec % 3600) / 60
     val s = sec % 60
     return "%02d:%02d:%02d".format(h, m, s)
+}
+
+private fun presetLabel(controls: UwbControlSettings): String {
+    return when {
+        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 5 -> "20ms stable"
+        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 3 -> "Max speed"
+        controls.uwbDataRateKbps == 850 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 7 -> "Outdoor robust"
+        else -> "Custom"
+    }
 }

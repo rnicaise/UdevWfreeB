@@ -2,12 +2,28 @@
 
 #include "nrf.h"
 #include "nrf_gpio.h"
+#include <string.h>
 
 #define UART_TX_TIMEOUT_CYCLES 20000u
 #define UART_TX_CHUNK_MAX 96u
+#define UART_RX_CMD_MAX 96u
 
 #define UART_TX_PIN NRF_GPIO_PIN_MAP(0, 19)
 #define UART_RX_PIN NRF_GPIO_PIN_MAP(0, 15)
+
+static uint8_t rx_byte;
+static char rx_line[UART_RX_CMD_MAX];
+static char ready_line[UART_RX_CMD_MAX];
+static uint32_t rx_line_len;
+static bool cmd_ready;
+
+static void uart_start_rx_byte(void)
+{
+    NRF_UARTE0->RXD.PTR = (uint32_t)&rx_byte;
+    NRF_UARTE0->RXD.MAXCNT = 1;
+    NRF_UARTE0->EVENTS_ENDRX = 0;
+    NRF_UARTE0->TASKS_STARTRX = 1;
+}
 
 static void uart_write_bytes(const uint8_t *data, uint32_t len)
 {
@@ -64,6 +80,10 @@ void uart_log_init(void)
     NRF_UARTE0->BAUDRATE = UARTE_BAUDRATE_BAUDRATE_Baud115200;
 
     NRF_UARTE0->ENABLE = UARTE_ENABLE_ENABLE_Enabled;
+
+    rx_line_len = 0;
+    cmd_ready = false;
+    uart_start_rx_byte();
 }
 
 void uart_log_write(const char *str)
@@ -108,4 +128,62 @@ void uart_log_write(const char *str)
     tx_buf[0] = '\r';
     tx_buf[1] = '\n';
     uart_write_bytes(tx_buf, 2);
+}
+
+void uart_log_poll_rx(void)
+{
+    uint8_t b;
+
+    if (NRF_UARTE0->EVENTS_ENDRX == 0)
+    {
+        return;
+    }
+
+    NRF_UARTE0->EVENTS_ENDRX = 0;
+    b = rx_byte;
+
+    if ((b == '\r') || (b == '\n'))
+    {
+        if ((rx_line_len > 0) && !cmd_ready)
+        {
+            rx_line[rx_line_len] = '\0';
+            memcpy(ready_line, rx_line, rx_line_len + 1u);
+            cmd_ready = true;
+        }
+        rx_line_len = 0;
+    }
+    else
+    {
+        if (rx_line_len < (UART_RX_CMD_MAX - 1u))
+        {
+            rx_line[rx_line_len++] = (char)b;
+        }
+        else
+        {
+            rx_line_len = 0;
+        }
+    }
+
+    uart_start_rx_byte();
+}
+
+bool uart_log_read_command(char *out, uint32_t out_len)
+{
+    uint32_t n;
+
+    if ((out == 0) || (out_len == 0) || !cmd_ready)
+    {
+        return false;
+    }
+
+    n = (uint32_t)strlen(ready_line);
+    if (n >= out_len)
+    {
+        n = out_len - 1u;
+    }
+
+    memcpy(out, ready_line, n);
+    out[n] = '\0';
+    cmd_ready = false;
+    return true;
 }
