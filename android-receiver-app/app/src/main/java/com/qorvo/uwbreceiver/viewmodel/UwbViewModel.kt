@@ -113,7 +113,6 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             settingsStore.updateTestProfile(value)
             settingsStore.updateUwbDataRateKbps(6800)
-            settingsStore.updateRangingMode(RangingMode.DS_TWR)
             when (value) {
                 TestProfile.TURBO_DISTANCE_ONLY -> {
                     settingsStore.updateMedianWindow(1)

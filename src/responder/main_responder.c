@@ -23,6 +23,7 @@
 #define POLL_MSG_ACQ_PERIOD_IDX   18
 #define POLL_MSG_ACQ_TOKEN_IDX    19
 #define POLL_MSG_TEST_PROFILE_IDX 20
+#define POLL_MSG_RANGING_MODE_IDX 21
 
 #define RESP_MSG_CTRL_OPT_IDX         11
 #define RESP_MSG_CTRL_TOKEN_IDX       12
@@ -30,6 +31,8 @@
 #define RESP_MSG_CTRL_ACQ_MS_IDX      14
 #define RESP_MSG_CTRL_ACQ_TOKEN_IDX   15
 #define RESP_MSG_CTRL_TEST_PROFILE_IDX 16
+#define RESP_MSG_SS_POLL_RX_TS_IDX    17
+#define RESP_MSG_SS_RESP_TX_TS_IDX    21
 
 #define RESP_FLAG_SWITCH_PENDING 0x01u
 #define RESP_FLAG_ACQ_PENDING    0x02u
@@ -54,7 +57,9 @@ static uint8_t tx_resp_msg[] = {
     'W', 'A',
     FUNC_CODE_RESPONSE,
     0x02,
-    0, 0, 0, 0, 0, 0
+    0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0,
+    0, 0, 0, 0
 };
 
 static uint8_t rx_final_msg[] = {
@@ -564,6 +569,7 @@ int ds_twr_responder_custom(void)
             {
                 uint32_t resp_tx_time;
                 int ret;
+                ranging_mode_t requested_ranging_mode = RANGING_MODE_DS_TWR;
 
                 accel_rx[0] = (int16_t)(rx_buffer[POLL_MSG_ACCEL_X_IDX] |
                               (rx_buffer[POLL_MSG_ACCEL_X_IDX + 1] << 8));
@@ -583,6 +589,24 @@ int ds_twr_responder_custom(void)
                 if (frame_len > POLL_MSG_TEST_PROFILE_IDX)
                 {
                     last_initiator_test_profile = rx_buffer[POLL_MSG_TEST_PROFILE_IDX];
+                }
+                if ((frame_len > POLL_MSG_RANGING_MODE_IDX) && (rx_buffer[POLL_MSG_RANGING_MODE_IDX] == (uint8_t)RANGING_MODE_SS_TWR))
+                {
+                    requested_ranging_mode = RANGING_MODE_SS_TWR;
+                }
+
+                if (requested_ranging_mode == RANGING_MODE_SS_TWR)
+                {
+                    if (is_supported_acq_period(last_initiator_acq_period_ms))
+                    {
+                        current_acq_period_ms = last_initiator_acq_period_ms;
+                    }
+                    if (is_supported_test_profile(last_initiator_test_profile))
+                    {
+                        current_test_profile = last_initiator_test_profile;
+                    }
+                    period_pending = false;
+                    period_after_final = false;
                 }
 
                 if (switch_pending && (frame_len > POLL_MSG_SWITCH_TOKEN_IDX))
@@ -612,6 +636,7 @@ int ds_twr_responder_custom(void)
 
                 resp_tx_time = (poll_rx_ts + (active_profile->responder_poll_rx_to_resp_tx_dly_uus * UUS_TO_DWT_TIME)) >> 8;
                 dwt_setdelayedtrxtime(resp_tx_time);
+                resp_tx_ts = (((uint64_t)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
 
                 dwt_setrxaftertxdelay(active_profile->responder_resp_tx_to_final_rx_dly_uus);
                 dwt_setrxtimeout(active_profile->responder_final_rx_timeout_uus);
@@ -625,13 +650,23 @@ int ds_twr_responder_custom(void)
                 tx_resp_msg[RESP_MSG_CTRL_ACQ_MS_IDX] = period_pending ? pending_acq_period_ms : current_acq_period_ms;
                 tx_resp_msg[RESP_MSG_CTRL_ACQ_TOKEN_IDX] = period_pending ? pending_acq_token : 0u;
                 tx_resp_msg[RESP_MSG_CTRL_TEST_PROFILE_IDX] = current_test_profile;
+                ranging_msg_set_ts(&tx_resp_msg[RESP_MSG_SS_POLL_RX_TS_IDX], poll_rx_ts);
+                ranging_msg_set_ts(&tx_resp_msg[RESP_MSG_SS_RESP_TX_TS_IDX], resp_tx_ts);
                 dwt_writetxdata(sizeof(tx_resp_msg), tx_resp_msg, 0);
-                dwt_writetxfctrl(sizeof(tx_resp_msg), 0, 1);
+                dwt_writetxfctrl(sizeof(tx_resp_msg) + FCS_LEN, 0, 1);
 
-                ret = dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED);
+                ret = dwt_starttx(DWT_START_TX_DELAYED | ((requested_ranging_mode == RANGING_MODE_SS_TWR) ? 0 : DWT_RESPONSE_EXPECTED));
 
                 if (ret == DWT_ERROR)
                 {
+                    continue;
+                }
+
+                if (requested_ranging_mode == RANGING_MODE_SS_TWR)
+                {
+                    waitforsysstatus(NULL, NULL, DWT_INT_TXFRS_BIT_MASK, 0);
+                    dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
+                    frame_seq_nb++;
                     continue;
                 }
 

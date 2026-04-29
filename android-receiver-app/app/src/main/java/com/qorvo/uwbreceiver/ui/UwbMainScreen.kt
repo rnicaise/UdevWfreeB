@@ -94,12 +94,12 @@ fun UwbMainScreen(
     ) {
         item {
             Text(
-                text = "UWB Receiver",
+                text = "UWB SS-TWR Bench",
                 fontSize = 26.sp,
                 fontWeight = FontWeight.ExtraBold,
             )
             Text(
-                text = "USB OTG live acquisition",
+                text = "Android sur initiator 760221448 · responder 760220908 allumé",
                 color = TextSecondary,
             )
             Text(

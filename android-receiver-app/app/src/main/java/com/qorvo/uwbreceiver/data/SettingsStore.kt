@@ -29,13 +29,12 @@ class SettingsStore(private val context: Context) {
     }
 
     val controls: Flow<UwbControlSettings> = context.dataStore.data.map { pref ->
-        val modeRaw = pref[keyRangingMode] ?: 0
         val testProfileRaw = pref[keyTestProfile] ?: TestProfile.STABLE_FULL.ordinal
         UwbControlSettings(
             medianWindow = (pref[keyMedianWindow] ?: 5).coerceIn(1, 31),
             uwbDataRateKbps = 6800,
             acquisitionPeriodMs = (pref[keyAcquisitionPeriodMs] ?: 20).coerceIn(1, 200),
-            rangingMode = if (modeRaw == 1) RangingMode.SS_TWR else RangingMode.DS_TWR,
+            rangingMode = RangingMode.SS_TWR,
             testProfile = TestProfile.entries.getOrElse(testProfileRaw) { TestProfile.STABLE_FULL },
         )
     }

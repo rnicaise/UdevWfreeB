@@ -50,7 +50,7 @@ data class UwbControlSettings(
     val medianWindow: Int = 5,
     val uwbDataRateKbps: Int = 6800,
     val acquisitionPeriodMs: Int = 20,
-    val rangingMode: RangingMode = RangingMode.DS_TWR,
+    val rangingMode: RangingMode = RangingMode.SS_TWR,
     val testProfile: TestProfile = TestProfile.STABLE_FULL,
 )
 

@@ -78,7 +78,7 @@ class UwbForegroundService : Service() {
     private var medianWindow = 5
     private var requestedUwbDataRateKbps = 6800
     private var requestedAcquisitionPeriodMs = 20
-    private var requestedRangingMode = RangingMode.DS_TWR
+    private var requestedRangingMode = RangingMode.SS_TWR
     private var requestedTestProfile = TestProfile.STABLE_FULL
     private var lastAppliedUwbDataRateKbps: Int? = null
     private val distWindow = ArrayDeque<Float>()

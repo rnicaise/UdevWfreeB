@@ -178,6 +178,7 @@ if(UWB_ROLE STREQUAL "initiator")
     list(APPEND PROJECT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/initiator/main_initiator.c
         ${CMAKE_SOURCE_DIR}/src/accel/accel.c
+        ${CMAKE_SOURCE_DIR}/src/uart/uart_log.c
     )
 elseif(UWB_ROLE STREQUAL "responder")
     list(APPEND PROJECT_SOURCES
