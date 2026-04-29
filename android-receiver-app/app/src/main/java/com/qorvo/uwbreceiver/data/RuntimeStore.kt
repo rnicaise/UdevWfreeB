@@ -17,7 +17,11 @@ object RuntimeStore {
     @Synchronized
     fun setLinkState(linkState: LinkState, status: String) {
         val current = _state.value
-        _state.value = current.copy(linkState = linkState, status = status)
+        _state.value = current.copy(
+            linkState = linkState,
+            status = status,
+            connectedRole = if (linkState == LinkState.CONNECTED) current.connectedRole else ConnectedUwbRole.UNKNOWN,
+        )
         if (linkState != LinkState.CONNECTED) {
             hzWindowStartElapsed = 0L
             distanceHistory.clear()
@@ -33,8 +37,15 @@ object RuntimeStore {
         _state.value = current.copy(
             linkState = LinkState.CONNECTED,
             status = status,
+            connectedRole = ConnectedUwbRole.UNKNOWN,
             sessionStartElapsedMs = current.sessionStartElapsedMs ?: now,
         )
+    }
+
+    @Synchronized
+    fun setConnectedRole(role: ConnectedUwbRole) {
+        val current = _state.value
+        _state.value = current.copy(connectedRole = role)
     }
 
     @Synchronized

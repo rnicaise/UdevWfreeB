@@ -31,6 +31,7 @@ import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
 import com.qorvo.uwbreceiver.MainActivity
 import com.qorvo.uwbreceiver.R
+import com.qorvo.uwbreceiver.data.ConnectedUwbRole
 import com.qorvo.uwbreceiver.data.CsvParser
 import com.qorvo.uwbreceiver.data.LinkState
 import com.qorvo.uwbreceiver.data.PhoneTelemetry
@@ -81,6 +82,7 @@ class UwbForegroundService : Service() {
     private var requestedRangingMode = RangingMode.SS_TWR
     private var requestedTestProfile = TestProfile.STABLE_FULL
     private var lastAppliedUwbDataRateKbps: Int? = null
+    private var connectedRole = ConnectedUwbRole.UNKNOWN
     private val distWindow = ArrayDeque<Float>()
 
     @Volatile
@@ -286,9 +288,10 @@ class UwbForegroundService : Service() {
 
             activeDriver = driver
             activePort = port
-            RuntimeStore.onConnected("USB connected")
-            applyUwbSettings()
+            connectedRole = ConnectedUwbRole.UNKNOWN
+            RuntimeStore.onConnected("USB connected, detecting role")
             startReadLoop(port)
+            requestConnectedRole()
             true
         } catch (e: Exception) {
             Timber.e(e, "Failed to open USB serial port")
@@ -332,6 +335,24 @@ class UwbForegroundService : Service() {
 
     private fun consumeLine(line: String) {
         if (line.isBlank() || line.startsWith("#")) {
+            return
+        }
+
+        if (line.startsWith("ROLE,")) {
+            val role = when (line.substringAfter("ROLE,").trim().uppercase()) {
+                "INITIATOR" -> ConnectedUwbRole.INITIATOR
+                "RESPONDER" -> ConnectedUwbRole.RESPONDER
+                else -> ConnectedUwbRole.UNKNOWN
+            }
+            if (role != ConnectedUwbRole.UNKNOWN) {
+                val changed = connectedRole != role
+                connectedRole = role
+                RuntimeStore.setConnectedRole(role)
+                RuntimeStore.setLinkState(LinkState.CONNECTED, "Detected role: ${role.name}")
+                if (changed) {
+                    applyUwbSettings()
+                }
+            }
             return
         }
 
@@ -412,14 +433,20 @@ class UwbForegroundService : Service() {
     private fun applyUwbSettings() {
         val rate = requestedUwbDataRateKbps
         val period = requestedAcquisitionPeriodMs
-        val mode = requestedRangingMode
+        val mode = effectiveRangingModeForRole(connectedRole)
         val profile = requestedTestProfile
+
+        if (mode == null) {
+            RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "Detecting UWB role before applying")
+            requestConnectedRole()
+            return
+        }
 
         applySettingsJob?.cancel()
         applySettingsJob = serviceScope.launch {
             RuntimeStore.setLinkState(
                 RuntimeStore.state.value.linkState,
-                "Sending UWB: ${profile.name}, $rate kbps, $period ms, ${mode.name}"
+                "Auto UWB: ${connectedRole.name} -> ${mode.name}, ${profile.name}, $rate kbps, $period ms"
             )
 
             val sentProfile = sendCommandSlowly("CFG,TEST_PROFILE=${profile.name}\n")
@@ -435,6 +462,20 @@ class UwbForegroundService : Service() {
             } else {
                 RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "UWB cmd pending (connect first)")
             }
+        }
+    }
+
+    private fun requestConnectedRole() {
+        serviceScope.launch {
+            sendCommandSlowly("CFG,GET_ROLE\n")
+        }
+    }
+
+    private fun effectiveRangingModeForRole(role: ConnectedUwbRole): RangingMode? {
+        return when (role) {
+            ConnectedUwbRole.INITIATOR -> RangingMode.SS_TWR
+            ConnectedUwbRole.RESPONDER -> RangingMode.DS_TWR
+            ConnectedUwbRole.UNKNOWN -> null
         }
     }
 
@@ -470,6 +511,7 @@ class UwbForegroundService : Service() {
         }
         activePort = null
         activeDriver = null
+        connectedRole = ConnectedUwbRole.UNKNOWN
     }
 
     private fun updateDistanceAlert(filteredDistanceM: Float) {

@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.qorvo.uwbreceiver.data.ConnectedUwbRole
 import com.qorvo.uwbreceiver.data.CsvSample
 import com.qorvo.uwbreceiver.data.LinkState
 import com.qorvo.uwbreceiver.data.RangingMode
@@ -84,6 +85,12 @@ fun UwbMainScreen(
         distance <= state.thresholds.orangeMax -> OrangeWarn
         else -> RedAlert
     }
+    val effectiveMode = effectiveModeLabel(state.runtime.connectedRole)
+    val roleSubtitle = when (state.runtime.connectedRole) {
+        ConnectedUwbRole.INITIATOR -> "Initiator detecte · mode auto SS-TWR rapide (~65 Hz)"
+        ConnectedUwbRole.RESPONDER -> "Responder detecte · mode auto DS-TWR stable (~55-60 Hz)"
+        ConnectedUwbRole.UNKNOWN -> "Connecte un boitier; l'app detecte automatiquement son role"
+    }
 
     LazyColumn(
         modifier = Modifier
@@ -94,12 +101,12 @@ fun UwbMainScreen(
     ) {
         item {
             Text(
-                text = "UWB SS-TWR Bench",
+                text = "UWB Ranging",
                 fontSize = 26.sp,
                 fontWeight = FontWeight.ExtraBold,
             )
             Text(
-                text = "Android sur initiator 760221448 · responder 760220908 allumé",
+                text = roleSubtitle,
                 color = TextSecondary,
             )
             Text(
@@ -185,6 +192,8 @@ fun UwbMainScreen(
                 Text("Session", fontWeight = FontWeight.Bold)
                 StatRow("Connection", state.runtime.linkState.name)
                 StatRow("Status", state.runtime.status)
+                StatRow("Connected role", state.runtime.connectedRole.name)
+                StatRow("Auto mode", effectiveMode)
                 StatRow("Real Hz", String.format("%.1f", state.runtime.hz))
                 StatRow("Resp acq ms", sample?.responderAcquisitionPeriodMs?.toString() ?: "--")
                 StatRow("Init acq ms", sample?.initiatorAcquisitionPeriodMs?.toString() ?: "--")
@@ -324,19 +333,22 @@ fun UwbMainScreen(
                     Text("Diagnostics full")
                 }
 
-                Text("Ranging mode: ${state.controls.rangingMode.name}", color = TextSecondary)
+                Text("Ranging mode auto: $effectiveMode", color = TextSecondary)
+                Text("Responder -> DS-TWR. Initiator -> SS-TWR.", color = TextSecondary)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { onRangingModeChange(RangingMode.DS_TWR) },
                         modifier = Modifier.weight(1f),
+                        enabled = false,
                     ) {
-                        Text("DS-TWR")
+                        Text("DS on responder")
                     }
                     Button(
                         onClick = { onRangingModeChange(RangingMode.SS_TWR) },
                         modifier = Modifier.weight(1f),
+                        enabled = false,
                     ) {
-                        Text("SS-TWR")
+                        Text("SS on initiator")
                     }
                 }
 
@@ -413,7 +425,7 @@ fun UwbMainScreen(
                     color = TextSecondary,
                 )
                 Text(
-                    text = "Note: SS-TWR est expose via commande runtime; si non supporte par firmware, un ERR est affiche dans Status.",
+                    text = "Note: le mode est choisi automatiquement selon le role du boitier branche en USB.",
                     color = TextSecondary,
                 )
                 Text(
@@ -496,6 +508,14 @@ private fun testProfileLabel(profile: TestProfile): String {
         TestProfile.STABLE_FULL -> "Stable full telemetry"
         TestProfile.ROBUST_DETECTION -> "Robust detection"
         TestProfile.DIAGNOSTICS_FULL -> "Diagnostics full"
+    }
+}
+
+private fun effectiveModeLabel(role: ConnectedUwbRole): String {
+    return when (role) {
+        ConnectedUwbRole.INITIATOR -> "SS_TWR"
+        ConnectedUwbRole.RESPONDER -> "DS_TWR"
+        ConnectedUwbRole.UNKNOWN -> "Detecting"
     }
 }
 

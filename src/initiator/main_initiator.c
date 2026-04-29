@@ -73,7 +73,7 @@ static uint8_t tx_poll_msg[] = {
     RNG_DELAY_MS,         /* [18] acquisition period currently applied (ms) */
     0,                    /* [19] period switch token */
     UWB_TEST_PROFILE_DEFAULT, /* [20] active safe test profile */
-    1                     /* [21] ranging mode: 0=DS-TWR, 1=SS-TWR */
+    0                     /* [21] ranging mode: 0=DS-TWR, 1=SS-TWR */
 };
 
 /* Response attendu du responder */
@@ -130,7 +130,7 @@ typedef enum
     RANGING_MODE_SS_TWR = 1,
 } ranging_mode_t;
 
-static ranging_mode_t active_ranging_mode = RANGING_MODE_SS_TWR;
+static ranging_mode_t active_ranging_mode = RANGING_MODE_DS_TWR;
 
 static uint8_t current_profile_opt = UWB_PROFILE_OPT_6M8_STABLE;
 static uint8_t pending_profile_opt = UWB_PROFILE_OPT_6M8_STABLE;
@@ -398,6 +398,12 @@ static void handle_app_command(const char *cmd)
     uint8_t requested_test_profile;
     ranging_mode_t requested_mode;
 
+    if ((strcmp(cmd, "CFG,GET_ROLE") == 0) || (strcmp(cmd, "INFO?") == 0))
+    {
+        uart_log_write("ROLE,INITIATOR");
+        return;
+    }
+
     if (parse_test_profile_command(cmd, &requested_test_profile))
     {
         if (!is_supported_test_profile(requested_test_profile))
@@ -484,6 +490,7 @@ int ds_twr_initiator_custom(void)
     test_run_info((unsigned char *)"UWB RANGING INIT v1.0");
     uart_log_init();
     uart_log_write("UWB RANGING INIT v1.0");
+    uart_log_write("ROLE,INITIATOR");
 
     /* ── 1. Init hardware ── */
     port_set_dw_ic_spi_fastrate();

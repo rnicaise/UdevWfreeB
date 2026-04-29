@@ -24,9 +24,16 @@ enum class LinkState {
     CONNECTED,
 }
 
+enum class ConnectedUwbRole {
+    UNKNOWN,
+    INITIATOR,
+    RESPONDER,
+}
+
 data class RuntimeState(
     val linkState: LinkState = LinkState.DISCONNECTED,
     val status: String = "Idle",
+    val connectedRole: ConnectedUwbRole = ConnectedUwbRole.UNKNOWN,
     val latest: CsvSample? = null,
     val displayDist: Float? = null,
     val std5s: Float? = null,
@@ -50,7 +57,7 @@ data class UwbControlSettings(
     val medianWindow: Int = 5,
     val uwbDataRateKbps: Int = 6800,
     val acquisitionPeriodMs: Int = 20,
-    val rangingMode: RangingMode = RangingMode.SS_TWR,
+    val rangingMode: RangingMode = RangingMode.DS_TWR,
     val testProfile: TestProfile = TestProfile.STABLE_FULL,
 )
 

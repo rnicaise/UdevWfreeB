@@ -371,6 +371,12 @@ static void handle_app_command(const char *cmd)
     uint8_t requested_test_profile;
     ranging_mode_t requested_mode;
 
+    if ((strcmp(cmd, "CFG,GET_ROLE") == 0) || (strcmp(cmd, "INFO?") == 0))
+    {
+        uart_log_write("ROLE,RESPONDER");
+        return;
+    }
+
     if (parse_test_profile_command(cmd, &requested_test_profile))
     {
         if (!is_supported_test_profile(requested_test_profile))
@@ -478,6 +484,7 @@ int ds_twr_responder_custom(void)
     test_run_info((unsigned char *)"UWB RANGING RESP v1.0");
     uart_log_init();
     uart_log_write("UWB RANGING RESP v1.0");
+    uart_log_write("ROLE,RESPONDER");
 
     port_set_dw_ic_spi_fastrate();
 
