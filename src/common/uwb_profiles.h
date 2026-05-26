@@ -11,8 +11,10 @@
 #include <stdint.h>
 #include <deca_device_api.h>
 
-#define UWB_PROFILE_OPT_6M8_STABLE  35u
-#define UWB_PROFILE_OPT_850K_ROBUST 40u
+#define UWB_PROFILE_OPT_6M8_STABLE_CH5 35u
+#define UWB_PROFILE_OPT_6M8_STABLE_CH9 36u
+#define UWB_PROFILE_OPT_6M8_STABLE     UWB_PROFILE_OPT_6M8_STABLE_CH5
+#define UWB_PROFILE_OPT_850K_ROBUST    40u
 
 typedef struct
 {
@@ -33,5 +35,7 @@ typedef struct
 
 const uwb_runtime_profile_t *uwb_profile_find(uint8_t opt);
 uint8_t uwb_profile_opt_for_rate_kbps(int rate_kbps);
+uint8_t uwb_profile_opt_for_channel_rate_kbps(uint8_t channel, int rate_kbps);
+uint8_t uwb_profile_channel_for_opt(uint8_t opt);
 
 #endif /* UWB_PROFILES_H */

@@ -40,7 +40,7 @@ class RecordingManager(private val context: Context) {
             ?: error("Unable to open output stream")
 
         writer = BufferedWriter(OutputStreamWriter(output)).apply {
-            appendLine("ms,sample,dist_raw,dist_filt,iax,iay,iaz,rax,ray,raz,resp_acq_ms,init_acq_ms,resp_profile_opt,init_profile_opt,phone_gx,phone_gy,phone_gz,phone_lat,phone_lon,phone_alt_m,phone_speed_mps,phone_fix_elapsed_ms")
+            appendLine("ms,sample,dist_raw,dist_filt,bike_box_position,vest_box_position,app_preset,app_test_profile,app_ranging_mode,app_rf_channel,app_uwb_data_rate_kbps,app_acq_period_ms,app_median_window,connected_role,link_reliability_10,stability_quality_10,smoothness_quality_10,timing_quality_10,dropout_quality_10,valid_rate_5s,jump_rate_5s,bad_burst_max,nlos_quality_10,rolling_std_5s_m,relative_speed_mps,instant_hz,timing_anomaly_rate,rx_power_dbm,fp_power_dbm,clock_offset_ppm,rx_quality_10,path_quality_10,multipath_quality_10,clock_quality_10,signal_quality_10,peak_to_fp_samples,fp_conf_level,sts_quality,iax,iay,iaz,rax,ray,raz,resp_acq_ms,init_acq_ms,resp_profile_opt,init_profile_opt,phone_gx,phone_gy,phone_gz,phone_lat,phone_lon,phone_alt_m,phone_speed_mps,phone_fix_elapsed_ms")
             flush()
         }
         currentUri = uri
@@ -54,8 +54,17 @@ class RecordingManager(private val context: Context) {
         return uri to fileName
     }
 
-    fun appendEnrichedSample(sample: CsvSample, filteredDist: Float, phone: PhoneTelemetry) {
+    fun appendEnrichedSample(
+        sample: CsvSample,
+        filteredDist: Float,
+        phone: PhoneTelemetry,
+        transmission: TransmissionQuality,
+        controls: UwbControlSettings,
+        experiment: ExperimentSettings,
+        connectedRole: ConnectedUwbRole,
+    ) {
         val w = writer ?: return
+        val signal = SignalQualityCalculator.fromSample(sample)
         w.appendLine(buildString {
             append(sample.ms)
             append(',')
@@ -64,6 +73,74 @@ class RecordingManager(private val context: Context) {
             append(sample.dist)
             append(',')
             append(filteredDist)
+            append(',')
+            append(experiment.bikeBoxPosition)
+            append(',')
+            append(experiment.vestBoxPosition)
+            append(',')
+            append(presetLabel(controls))
+            append(',')
+            append(controls.testProfile.name)
+            append(',')
+            append(controls.rangingMode.name)
+            append(',')
+            append(controls.rfChannel)
+            append(',')
+            append(controls.uwbDataRateKbps)
+            append(',')
+            append(controls.acquisitionPeriodMs)
+            append(',')
+            append(controls.medianWindow)
+            append(',')
+            append(connectedRole.name)
+            append(',')
+            append(transmission.linkReliabilityScore10?.toString() ?: "")
+            append(',')
+            append(transmission.stabilityScore10?.toString() ?: "")
+            append(',')
+            append(transmission.smoothnessScore10?.toString() ?: "")
+            append(',')
+            append(transmission.timingScore10?.toString() ?: "")
+            append(',')
+            append(transmission.dropoutScore10?.toString() ?: "")
+            append(',')
+            append(transmission.validRate5s?.toString() ?: "")
+            append(',')
+            append(transmission.jumpRate5s?.toString() ?: "")
+            append(',')
+            append(transmission.badBurstMax)
+            append(',')
+            append(transmission.nlosScore10?.toString() ?: "")
+            append(',')
+            append(transmission.rollingStd5sM?.toString() ?: "")
+            append(',')
+            append(transmission.lastRelativeSpeedMps?.toString() ?: "")
+            append(',')
+            append(transmission.lastInstantHz?.toString() ?: "")
+            append(',')
+            append(transmission.timingAnomalyRate?.toString() ?: "")
+            append(',')
+            append(sample.rxPowerDbm?.toString() ?: "")
+            append(',')
+            append(sample.firstPathPowerDbm?.toString() ?: "")
+            append(',')
+            append(sample.clockOffsetPpm?.toString() ?: "")
+            append(',')
+            append(signal.rxScore10?.toString() ?: "")
+            append(',')
+            append(signal.directPathScore10?.toString() ?: "")
+            append(',')
+            append(signal.multipathScore10?.toString() ?: "")
+            append(',')
+            append(signal.clockScore10?.toString() ?: "")
+            append(',')
+            append(sample.signalQuality10?.toString() ?: "")
+            append(',')
+            append(sample.peakToFirstPathSamples?.toString() ?: "")
+            append(',')
+            append(sample.firstPathConfidence?.toString() ?: "")
+            append(',')
+            append(sample.stsQuality?.toString() ?: "")
             append(',')
             append(sample.iax)
             append(',')
@@ -115,5 +192,16 @@ class RecordingManager(private val context: Context) {
 
     private fun fileNameFromUri(uri: Uri): String {
         return uri.lastPathSegment?.substringAfterLast('/') ?: "recording.csv"
+    }
+
+    private fun presetLabel(controls: UwbControlSettings): String {
+        return when {
+            controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 1 && controls.testProfile == TestProfile.TURBO_DISTANCE_ONLY -> "turbo_experimental"
+            controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 1 && controls.testProfile == TestProfile.FAST_DISTANCE_ONLY -> "max_speed_safe"
+            controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 5 -> "20ms_stable"
+            controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 3 -> "max_speed"
+            controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 30 && controls.medianWindow == 7 -> "outdoor_robust"
+            else -> "custom"
+        }
     }
 }

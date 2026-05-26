@@ -1,19 +1,13 @@
 package com.qorvo.uwbreceiver.ui
 
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -27,9 +21,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,6 +28,7 @@ import com.qorvo.uwbreceiver.data.ConnectedUwbRole
 import com.qorvo.uwbreceiver.data.CsvSample
 import com.qorvo.uwbreceiver.data.LinkState
 import com.qorvo.uwbreceiver.data.RangingMode
+import com.qorvo.uwbreceiver.data.SignalQualityCalculator
 import com.qorvo.uwbreceiver.data.TestProfile
 import com.qorvo.uwbreceiver.data.UwbControlSettings
 import com.qorvo.uwbreceiver.data.UwbUiState
@@ -60,8 +52,11 @@ fun UwbMainScreen(
     onOrangeChange: (Float) -> Unit,
     onMedianWindowChange: (Int) -> Unit,
     onUwbDataRateChange: (Int) -> Unit,
+    onRfChannelChange: (Int) -> Unit,
     onAcquisitionPeriodChange: (Int) -> Unit,
     onRangingModeChange: (RangingMode) -> Unit,
+    onBikeBoxPositionChange: (Int) -> Unit,
+    onVestBoxPositionChange: (Int) -> Unit,
     onTestProfileChange: (TestProfile) -> Unit,
     onPreset20msStable: () -> Unit,
     onPresetMaxSpeed: () -> Unit,
@@ -69,22 +64,16 @@ fun UwbMainScreen(
     onApplyUwbSettings: () -> Unit,
 ) {
     val sample = state.runtime.latest
+    val quality = state.runtime.sessionQuality
     val rawDistance = sample?.dist ?: 0f
     val distance = state.runtime.displayDist ?: rawDistance
-    val maxGauge = (state.thresholds.orangeMax + 1.0f).coerceAtLeast(1.5f)
-
-    val gaugeProgress = (distance / maxGauge).coerceIn(0f, 1f)
-    val animatedGauge = animateFloatAsState(
-        targetValue = gaugeProgress,
-        animationSpec = tween(280),
-        label = "gauge",
-    ).value
-
-    val gaugeColor = when {
+    val transmission = state.runtime.transmissionQuality
+    val distanceColor = when {
         distance <= state.thresholds.greenMax -> GreenGood
         distance <= state.thresholds.orangeMax -> OrangeWarn
         else -> RedAlert
     }
+    val signal = SignalQualityCalculator.fromSample(sample)
     val effectiveMode = effectiveModeLabel(state.runtime.connectedRole)
     val roleSubtitle = when (state.runtime.connectedRole) {
         ConnectedUwbRole.INITIATOR -> "Initiator detecte · mode auto SS-TWR rapide (~65 Hz)"
@@ -117,52 +106,39 @@ fun UwbMainScreen(
 
         item {
             CardBlock {
-                Text("Distance", fontWeight = FontWeight.Bold)
+                Text("Distance + Transmission quality", fontWeight = FontWeight.Bold)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        text = if (sample == null) "--" else String.format("%.2f m", distance),
-                        fontSize = 46.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = gaugeColor,
-                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Distance", color = TextSecondary, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = if (sample == null) "--" else String.format("%.2f m", distance),
+                            fontSize = 46.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = distanceColor,
+                        )
+                    }
 
-                    Box(
-                        modifier = Modifier
-                            .width(140.dp)
-                            .height(90.dp),
-                        contentAlignment = Alignment.Center,
+                    Column(
+                        modifier = Modifier.weight(1.25f),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val stroke = 14.dp.toPx()
-                            val radius = size.minDimension / 2f - stroke
-                            val center = Offset(size.width / 2f, size.height)
-                            drawArc(
-                                color = SurfaceCardAlt,
-                                startAngle = 180f,
-                                sweepAngle = 180f,
-                                useCenter = false,
-                                topLeft = Offset(center.x - radius, center.y - radius),
-                                size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
-                                style = Stroke(width = stroke, cap = StrokeCap.Round),
-                            )
-                            drawArc(
-                                color = gaugeColor,
-                                startAngle = 180f,
-                                sweepAngle = 180f * animatedGauge,
-                                useCenter = false,
-                                topLeft = Offset(center.x - radius, center.y - radius),
-                                size = androidx.compose.ui.geometry.Size(radius * 2, radius * 2),
-                                style = Stroke(width = stroke, cap = StrokeCap.Round),
-                            )
+                        Text("Transmission", color = TextSecondary, fontWeight = FontWeight.Bold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SignalCategoryTile("Link", transmission.linkReliabilityScore10, formatPercent(transmission.validRate5s), Modifier.weight(1f))
+                            SignalCategoryTile("Stab", transmission.stabilityScore10, formatMeters(transmission.rollingStd5sM), Modifier.weight(1f))
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            SignalCategoryTile("Jump", transmission.jumpScore10, formatPercent(transmission.jumpRate5s), Modifier.weight(1f))
+                            SignalCategoryTile("NLOS", transmission.nlosScore10, formatPeakGap(sample?.peakToFirstPathSamples), Modifier.weight(1f))
                         }
                     }
                 }
                 Text(
-                    text = "Thresholds: green <= ${state.thresholds.greenMax}m, orange <= ${state.thresholds.orangeMax}m",
+                    text = "Qualite utile: link reliability, stabilité, jump rate, burst/dropouts et NLOS/CIR. Les dB restent indicatifs seulement.",
                     color = TextSecondary,
                 )
                 if (sample != null) {
@@ -199,10 +175,33 @@ fun UwbMainScreen(
                 StatRow("Init acq ms", sample?.initiatorAcquisitionPeriodMs?.toString() ?: "--")
                 StatRow("Resp profile", profileLabel(sample?.responderProfileOpt))
                 StatRow("Init profile", profileLabel(sample?.initiatorProfileOpt))
+                StatRow("Bike box position", state.experiment.bikeBoxPosition.toString())
+                StatRow("Vest box position", state.experiment.vestBoxPosition.toString())
+                StatRow("App preset", presetLabel(state.controls))
+                StatRow("App test profile", state.controls.testProfile.name)
+                StatRow("App RF channel", state.controls.rfChannel.toString())
                 StatRow("Samples", state.runtime.samples.toString())
                 StatRow("Duration", formatDuration(state.elapsedSec))
                 StatRow("Recording", if (state.runtime.recording) "ON" else "OFF")
                 StatRow("File", state.runtime.recordingName ?: "-")
+                Text("Transmission quality", fontWeight = FontWeight.Bold)
+                StatRow("Link reliability", formatScoreWithDetail(transmission.linkReliabilityScore10, formatPercent(transmission.validRate5s)))
+                StatRow("Stability", formatScoreWithDetail(transmission.stabilityScore10, formatMeters(transmission.rollingStd5sM)))
+                StatRow("Smoothness", formatScoreWithDetail(transmission.smoothnessScore10, formatMps(transmission.lastRelativeSpeedMps)))
+                StatRow("Jump rate", formatScoreWithDetail(transmission.jumpScore10, formatPercent(transmission.jumpRate5s)))
+                StatRow("Timing", formatScoreWithDetail(transmission.timingScore10, formatHz(transmission.lastInstantHz)))
+                StatRow("Dropout", formatScoreWithDetail(transmission.dropoutScore10, formatPercent(transmission.timingAnomalyRate)))
+                StatRow("Bad burst max", transmission.badBurstMax.toString())
+                StatRow("NLOS/CIR", formatScoreWithDetail(transmission.nlosScore10, "gap ${formatPeakGap(sample?.peakToFirstPathSamples)} · conf ${sample?.firstPathConfidence ?: "--"}"))
+                Text("Radio raw", fontWeight = FontWeight.Bold)
+                StatRow("RX / first path", "${formatDbm(sample?.rxPowerDbm)} / ${formatDbm(sample?.firstPathPowerDbm)}")
+                StatRow("Multipath gap", formatDb(signal.multipathGapDb))
+                StatRow("Clock offset", formatPpm(sample?.clockOffsetPpm))
+                StatRow("Session std", quality.sessionStd?.let { String.format("%.3f m", it) } ?: "--")
+                StatRow("Speed spikes >10m/s", quality.speedSpikeCount.toString())
+                StatRow("Hz anomalies >100", quality.frequencyAnomalyCount.toString())
+                StatRow("Last rel speed", quality.lastRelativeSpeedMps?.let { String.format("%.2f m/s", it) } ?: "--")
+                StatRow("Last inst Hz", quality.lastInstantHz?.let { String.format("%.1f", it) } ?: "--")
                 StatRow("Invalid lines", state.runtime.invalidLines.toString())
             }
         }
@@ -256,6 +255,26 @@ fun UwbMainScreen(
                 ) {
                     Text("Share last CSV")
                 }
+            }
+        }
+
+        item {
+            CardBlock {
+                Text("Plan d'expérience", fontWeight = FontWeight.Bold)
+                Text(
+                    "Choix manuel enregistré dans chaque ligne du CSV pour comparer les essais.",
+                    color = TextSecondary,
+                )
+                ExperimentPositionSelector(
+                    title = "Boîtier vélo",
+                    selected = state.experiment.bikeBoxPosition,
+                    onSelect = onBikeBoxPositionChange,
+                )
+                ExperimentPositionSelector(
+                    title = "Veste",
+                    selected = state.experiment.vestBoxPosition,
+                    onSelect = onVestBoxPositionChange,
+                )
             }
         }
 
@@ -403,6 +422,25 @@ fun UwbMainScreen(
                     }
                 }
 
+                Text("RF channel: ${state.controls.rfChannel}", color = TextSecondary)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = { onRfChannelChange(5) },
+                        modifier = Modifier.weight(1f),
+                        enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    ) {
+                        Text(if (state.controls.rfChannel == 5) "✓ Channel 5" else "Channel 5")
+                    }
+                    Button(
+                        onClick = { onRfChannelChange(9) },
+                        modifier = Modifier.weight(1f),
+                        enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    ) {
+                        Text(if (state.controls.rfChannel == 9) "✓ Channel 9" else "Channel 9")
+                    }
+                }
+                Text("Ch5 = actuel; Ch9 = test RF alternatif pour multipath/cadre métallique.", color = TextSecondary)
+
                 Text(
                     "Acquisition period target: ${state.controls.acquisitionPeriodMs} ms (${String.format("%.1f", 1000f / state.controls.acquisitionPeriodMs)} Hz target)",
                     color = TextSecondary,
@@ -438,6 +476,22 @@ fun UwbMainScreen(
 }
 
 @Composable
+private fun ExperimentPositionSelector(title: String, selected: Int, onSelect: (Int) -> Unit) {
+    val positions = listOf(1, -1, 2, -2, 3, -3)
+    Text("$title: $selected", color = TextSecondary, fontWeight = FontWeight.Bold)
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        positions.forEach { position ->
+            Button(
+                onClick = { onSelect(position) },
+                modifier = Modifier.weight(1f),
+            ) {
+                Text(if (position == selected) "✓ $position" else position.toString())
+            }
+        }
+    }
+}
+
+@Composable
 private fun CardBlock(modifier: Modifier = Modifier, content: @Composable ColumnScope.() -> Unit) {
     Card(
         modifier = modifier.fillMaxWidth(),
@@ -464,6 +518,26 @@ private fun TripleValues(sample: CsvSample?, initiator: Boolean) {
         Text("X: ${x ?: "--"}")
         Text("Y: ${y ?: "--"}")
         Text("Z: ${z ?: "--"}")
+    }
+}
+
+@Composable
+private fun SignalCategoryTile(title: String, score: Float?, detail: String, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(SurfaceCardAlt)
+            .padding(horizontal = 8.dp, vertical = 7.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(title, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text(
+            text = score?.let { String.format("%.0f", it) } ?: "--",
+            fontSize = 25.sp,
+            fontWeight = FontWeight.ExtraBold,
+            color = signalQualityColor(score),
+        )
+        Text(detail, color = TextSecondary, fontSize = 10.sp)
     }
 }
 
@@ -519,9 +593,54 @@ private fun effectiveModeLabel(role: ConnectedUwbRole): String {
     }
 }
 
+private fun signalQualityColor(score: Float?) = when {
+    score == null -> TextSecondary
+    score >= 8f -> GreenGood
+    score >= 5f -> OrangeWarn
+    else -> RedAlert
+}
+
+private fun formatDbm(value: Float?): String {
+    return value?.let { String.format("%.1f dBm", it) } ?: "--"
+}
+
+private fun formatDb(value: Float?): String {
+    return value?.let { String.format("%.1f dB", it) } ?: "--"
+}
+
+private fun formatMeters(value: Float?): String {
+    return value?.let { String.format("%.3f m", it) } ?: "--"
+}
+
+private fun formatMps(value: Float?): String {
+    return value?.let { String.format("%.2f m/s", it) } ?: "--"
+}
+
+private fun formatHz(value: Float?): String {
+    return value?.let { String.format("%.1f Hz", it) } ?: "--"
+}
+
+private fun formatPercent(value: Float?): String {
+    return value?.let { String.format("%.0f%%", it * 100f) } ?: "--"
+}
+
+private fun formatPeakGap(value: Float?): String {
+    return value?.let { String.format("%.1f spl", it) } ?: "--"
+}
+
+private fun formatPpm(value: Float?): String {
+    return value?.let { String.format("%.2f ppm", it) } ?: "--"
+}
+
+private fun formatScoreWithDetail(score: Float?, detail: String): String {
+    val scoreText = score?.let { String.format("%.0f/10", it) } ?: "--"
+    return if (detail == "--") scoreText else "$scoreText · $detail"
+}
+
 private fun profileLabel(profileOpt: Int?): String {
     return when (profileOpt) {
         35 -> "35 / 6.8M stable"
+        36 -> "36 / 6.8M ch9"
         40 -> "40 / 850K robust"
         null -> "--"
         else -> profileOpt.toString()

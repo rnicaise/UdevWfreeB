@@ -1,0 +1,995 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fall Detection — Freejump - LEAPS Partnership Approach</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/black.css" id="theme">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/highlight/monokai.css">
+  <style>
+    :root {
+      --green: #2ecc71;
+      --yellow: #f1c40f;
+      --red: #e74c3c;
+      --blue: #3498db;
+      --purple: #9b59b6;
+      --orange: #e67e22;
+      --dark-bg: #1a1a2e;
+    }
+
+    .reveal {
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      font-size: 28px;
+    }
+
+    .reveal .slides section {
+      text-align: left;
+    }
+
+    .reveal h1, .reveal h2, .reveal h3 {
+      text-transform: none;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .reveal h2 {
+      font-size: 1.3em;
+    }
+
+    .reveal h3 {
+      font-size: 0.9em;
+    }
+
+    /* Title slide */
+    .slide-title h1 {
+      font-size: 1.9em;
+      text-align: center;
+    }
+    .slide-title p {
+      text-align: center;
+      opacity: 0.7;
+      font-size: 0.75em;
+    }
+
+    /* Product slides with white bg */
+    .slide-product {
+      background: #fff !important;
+      color: #222 !important;
+    }
+    .slide-product h2, .slide-product h3, .slide-product strong {
+      color: #222 !important;
+    }
+    .slide-product ul li {
+      color: #444 !important;
+      opacity: 1;
+    }
+    .slide-product .tag {
+      font-size: 0.5em;
+    }
+    .slide-product img {
+      max-height: 420px;
+      width: auto;
+      object-fit: contain;
+      border-radius: 8px;
+    }
+    .slide-product .key-point {
+      background: rgba(0,0,0,0.03);
+      border-color: rgba(0,0,0,0.1);
+      color: #333;
+    }
+
+    /* Colored left border per section */
+    .accent-green  { border-left: 6px solid var(--green);  padding-left: 30px; }
+    .accent-yellow { border-left: 6px solid var(--yellow); padding-left: 30px; }
+    .accent-red    { border-left: 6px solid var(--red);    padding-left: 30px; }
+    .accent-blue   { border-left: 6px solid var(--blue);   padding-left: 30px; }
+    .accent-purple { border-left: 6px solid var(--purple); padding-left: 30px; }
+    .accent-orange { border-left: 6px solid var(--orange); padding-left: 30px; }
+
+    .tag {
+      display: inline-block;
+      padding: 4px 14px;
+      border-radius: 20px;
+      font-size: 0.55em;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 12px;
+    }
+    .tag-green  { background: var(--green);  color: #000; }
+    .tag-yellow { background: var(--yellow); color: #000; }
+    .tag-red    { background: var(--red);    color: #fff; }
+    .tag-blue   { background: var(--blue);   color: #fff; }
+    .tag-purple { background: var(--purple); color: #fff; }
+    .tag-orange { background: var(--orange); color: #fff; }
+
+    .reveal ul {
+      list-style: none;
+      padding-left: 0;
+    }
+    .reveal ul li {
+      padding: 4px 0;
+      font-size: 0.75em;
+      opacity: 0.92;
+    }
+    .reveal ul li::before {
+      content: '→ ';
+      opacity: 0.5;
+    }
+
+    .key-point {
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 12px;
+      padding: 16px 22px;
+      margin-top: 16px;
+      font-size: 0.7em;
+    }
+
+    .screenshot-placeholder {
+      background: rgba(255,255,255,0.04);
+      border: 2px dashed rgba(255,255,255,0.15);
+      border-radius: 12px;
+      padding: 40px;
+      text-align: center;
+      color: rgba(255,255,255,0.3);
+      font-size: 0.7em;
+      margin-top: 16px;
+    }
+
+    .results-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.54em;
+      margin-top: 10px;
+    }
+    .results-table th,
+    .results-table td {
+      border: 1px solid rgba(255,255,255,0.16);
+      padding: 7px 9px;
+      vertical-align: top;
+    }
+    .results-table th {
+      background: rgba(255,255,255,0.10);
+      font-size: 0.9em;
+      color: rgba(255,255,255,0.95);
+    }
+    .results-table td {
+      background: rgba(255,255,255,0.035);
+      color: rgba(255,255,255,0.86);
+    }
+    .results-table .result-good { color: var(--green); font-weight: 700; }
+    .results-table .result-warn { color: var(--yellow); font-weight: 700; }
+    .results-table .result-risk { color: var(--red); font-weight: 700; }
+    .results-table .muted { color: rgba(255,255,255,0.62); }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 30px;
+      align-items: start;
+    }
+
+    .reveal .slide-number {
+      font-size: 0.5em;
+      opacity: 0.4;
+    }
+
+    .icon-large {
+      font-size: 1.6em;
+      margin-bottom: 8px;
+    }
+
+    .tech-badge {
+      display: inline-block;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 0.5em;
+      margin: 2px;
+    }
+
+    .timeline {
+      position: relative;
+      padding-left: 24px;
+    }
+    .timeline::before {
+      content: '';
+      position: absolute;
+      left: 6px;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: rgba(255,255,255,0.15);
+    }
+    .timeline .step {
+      position: relative;
+      padding: 10px 0;
+    }
+    .timeline .step::before {
+      content: '';
+      position: absolute;
+      left: -22px;
+      top: 18px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--blue);
+    }
+    .timeline .step.done::before { background: var(--green); }
+    .timeline .step.current::before { background: var(--orange); box-shadow: 0 0 8px var(--orange); }
+
+    .fragment.highlight-current-green.visible {
+      color: var(--green);
+    }
+
+    /* Persistent Freejump logo bottom-center */
+    .reveal .freejump-watermark {
+      position: fixed;
+      bottom: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 100;
+      opacity: 0.2;
+    }
+    .reveal .freejump-watermark img {
+      height: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- SLIDE 0 — TITLE -->
+      <section class="slide-title">
+        <div style="margin-bottom: 20px; text-align: center;">
+          <img src="ressources/logo_libe_white.svg" alt="Libe" style="width: 180px; height: auto; margin-bottom: 10px;">
+        </div>
+        <h1>Sensor-Based Airbag</h1>
+        <h3 style="text-align: center; font-weight: 400; color: var(--blue); opacity: 1; font-size: 0.85em; margin-top: 16px;">
+          Freejump - LEAPS Partnership Approach
+        </h3>
+        <p>Freejump · April 2026</p>
+      </section>
+
+      <!-- SLIDE 0b — LE SYSTÈME -->
+      <section data-background-color="#ffffff" class="slide-product">
+        <div class="two-col" style="align-items: center;">
+          <div>
+            <span class="tag" style="background: #222; color: #fff;">System</span>
+            <h2 style="font-size: 1.2em;">Wireless Equestrian & Cycling Airbag</h2>
+            <p style="font-size: 0.7em; color: #444; line-height: 1.6; margin-bottom: 16px;">
+              Build an airbag integrating <strong>electronic fall detection</strong>
+              and a <strong>pyrotechnic triggering system</strong>. Fast, reliable, ergonomic protection
+              with no mechanical tether to the saddle.
+            </p>
+            <ul>
+              <li>Designed for riding, training, and competition</li>
+              <li><strong>Real-time</strong> fall detection before ground impact</li>
+              <li>Inertial sensors + embedded algorithm</li>
+              <li>Ultra-fast inflation via pyrotechnic gas generator</li>
+            </ul>
+          </div>
+          <div style="text-align: center;">
+            <img src="ressources/airbag_vest_inner_view.png" alt="Gilet Airbag Freejump"
+                 style="max-height: 480px; filter: drop-shadow(0 4px 20px rgba(0,0,0,0.15));">
+            <div style="font-size: 0.5em; opacity: 0.4; margin-top: 8px;">Freejump airbag vest — inner view</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE 0c — COMPOSANTS -->
+      <section data-background-color="#ffffff" class="slide-product">
+        <span class="tag" style="background: #222; color: #fff;">Product</span>
+        <h2 style="font-size: 1.2em;">3 Key Components</h2>
+        <div style="display: flex; justify-content: space-around; margin-top: 12px; margin-bottom: 20px; text-align: center;">
+          <div style="flex: 1;">
+            <span style="display: inline-block; width: 24px; height: 24px; line-height: 24px; border-radius: 50%; background: #222; color: #fff; font-size: 0.55em; font-weight: 700; text-align: center; margin-bottom: 6px;">1</span><br>
+            <strong style="font-size: 0.7em; color: #222;">Tubeless Vest</strong>
+            <div style="font-size: 0.6em; color: #666;">Tubeless Technology</div>
+          </div>
+          <div style="flex: 1;">
+            <span style="display: inline-block; width: 24px; height: 24px; line-height: 24px; border-radius: 50%; background: #222; color: #fff; font-size: 0.55em; font-weight: 700; text-align: center; margin-bottom: 6px;">2</span><br>
+            <strong style="font-size: 0.7em; color: #222;">Acquisition Unit</strong>
+            <div style="font-size: 0.6em; color: #666;">IMU + sensor fusion</div>
+          </div>
+          <div style="flex: 1;">
+            <span style="display: inline-block; width: 24px; height: 24px; line-height: 24px; border-radius: 50%; background: #222; color: #fff; font-size: 0.55em; font-weight: 700; text-align: center; margin-bottom: 6px;">3</span><br>
+            <strong style="font-size: 0.7em; color: #222;">Gas Generator</strong>
+            <div style="font-size: 0.6em; color: #666;">Pyrotechnic cartridge</div>
+          </div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(3, 1fr); align-items: center; gap: 24px;">
+          <div style="text-align: center;">
+            <img src="ressources/airbag_vest_inner_view.png" alt="Gilet Airbag Freejump"
+                 style="max-height: 350px; max-width: 100%; filter: drop-shadow(0 4px 20px rgba(0,0,0,0.15));">
+          </div>
+          <div style="text-align: center;">
+            <img src="ressources/acquisition_unit_prototype_render.jpeg" alt="Acquisition unit prototype"
+                 style="max-height: 350px; max-width: 100%; object-fit: contain; border-radius: 8px; filter: drop-shadow(0 4px 20px rgba(0,0,0,0.15));">
+          </div>
+          <div style="text-align: center;">
+              <img src="ressources/pyrotechnic_cartridge_overview.png" alt="Pyrotechnic cartridge"
+                 style="max-height: 350px; max-width: 100%; filter: drop-shadow(0 4px 20px rgba(0,0,0,0.15));">
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE 1 — OBJECTIF -->
+      <section>
+        <div class="accent-green">
+          <span class="tag tag-green">Objective</span>
+          <h2>Reliable Fall Detection<br>in Real Time</h2>
+          <ul>
+            <li>Complex environment: vibration, noise, and varied terrain</li>
+            <li>Zero false positives to preserve user trust</li>
+            <li>Embedded on inertial sensors + complementary technologies</li>
+          </ul>
+          <div class="key-point">
+            <strong>Key constraint:</strong><br>
+            A false positive means loss of trust.<br>
+            A missed detection means real danger.
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE 2 — CURRENT APPROACH -->
+      <section>
+        <div class="accent-red">
+          <span class="tag tag-red">Current Approach</span>
+          <h2>Method We Are Using Today</h2>
+          <ul>
+            <li><strong>Energy-based approaches</strong> — gyro energy and acceleration as fall signatures</li>
+            <li><strong>Statistical approaches</strong> — sliding windows, adaptive thresholds, distributions</li>
+            <li><strong>Combining both</strong> — crossing energy and statistics improves reliability</li>
+          </ul>
+          <div class="key-point" style="border-color: var(--red); background: rgba(231,76,60,0.08);">
+            We combine physics-driven indicators with statistical robustness
+            to improve detection confidence in real riding conditions.
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE 3 — TECH EXPLORATION -->
+      <section>
+        <div class="accent-orange">
+          <span class="tag tag-orange">Tech Exploration</span>
+          <h2>UWB + IMU Fusion Opportunities</h2>
+          <div class="two-col">
+            <div>
+              <h3 style="font-size: 0.75em; opacity: 0.6;">UWB — distance measurement</h3>
+              <ul>
+                <li>Real-time rider ↔ horse distance</li>
+                <li>Centimeter-level precision</li>
+                <li>Complementary signal to IMU-based detection</li>
+              </ul>
+            </div>
+            <div>
+              <h3 style="font-size: 0.75em; opacity: 0.6;">Sensor fusion — 3D orientation</h3>
+              <ul>
+                <li>Saddle and rider orientation estimation</li>
+                <li>Automatic synchronization of both sensors</li>
+                <li>Motion signature extraction for fall scenarios</li>
+              </ul>
+            </div>
+          </div>
+          <div class="key-point">
+            Target architecture for the next phase:<br>
+            <strong>IMU-only → IMU + UWB + orientation features.</strong>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE 4 — PROTOTYPING -->
+      <section>
+        <div class="accent-blue">
+          <span class="tag tag-blue">Prototyping</span>
+          <h2>Prototype Setup</h2>
+          <div class="two-col" style="align-items: start; gap: 24px;">
+            <div>
+              <ul>
+                <li>Based on <strong>DWM3001CDK</strong> evaluation board</li>
+                <li>Add a <strong>boost circuit</strong> for pyrotechnic triggering</li>
+                <li>Add an <strong>IMU</strong> aligned with our detection approach</li>
+              </ul>
+              <div class="key-point">
+                Goal: quickly validate an integrated UWB + IMU platform
+                ready for real-world fall-detection experiments.
+              </div>
+            </div>
+            <div style="text-align: center;">
+                  <img src="ressources/qorvo_dwm3001cdk_prototype_setup.png" alt="Prototyping board reference"
+                   style="max-height: 360px; width: auto; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE 5 — UWB EVALUATION PLAN -->
+      <section>
+        <div class="accent-blue">
+          <span class="tag tag-blue">UWB Evaluation</span>
+          <h2>Why We Designed a Test Plan</h2>
+          <div class="two-col">
+            <div>
+              <ul>
+                <li>Evaluate whether UWB brings useful distance information for fall detection</li>
+                <li>Move from “it works on the bench” to repeatable field measurements</li>
+                <li>Compare modes, RF channels, mounting positions, and dynamic stability</li>
+                <li>Share the protocol, data, and open questions with LEAPS</li>
+              </ul>
+            </div>
+            <div>
+              <div class="key-point" style="margin-top:0; border-color: var(--blue); background: rgba(52,152,219,0.08);">
+                This is a feasibility gate, not yet a final product specification.<br><br>
+                <strong>Question:</strong> is the UWB signal stable and fast enough to improve an IMU-only detection system?
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ====== UWB RANGING SECTION ====== -->
+
+      <!-- SLIDE UWB 1 — Context -->
+      <section>
+        <div class="accent-blue">
+          <span class="tag tag-blue">UWB Ranging — 1/12</span>
+          <h2>Context</h2>
+          <p style="font-size: 0.75em; opacity: 0.8; margin-bottom: 12px;">Real-time distance between bike and vest</p>
+          <div class="two-col">
+            <ul>
+              <li>UWB module fixed on the bike</li>
+              <li>UWB module worn on the vest</li>
+              <li>Goal: measure distance in real time</li>
+              <li style="margin-top:8px; opacity:0.7;"><strong>Challenging conditions:</strong></li>
+              <li>Motion &amp; body proximity</li>
+              <li>Metal bike frame</li>
+              <li>Changing orientations</li>
+              <li>Outdoor environment</li>
+            </ul>
+            <div style="text-align:center;">
+              <img src="ressources/uwb_box_positions_overview.png" alt="Bike and vest UWB box positions"
+                   style="width: 100%; max-height: 390px; object-fit: contain; border-radius: 16px; background: #fff; box-shadow: 0 4px 24px rgba(0,0,0,0.35);">
+              <div style="font-size:0.5em; opacity:0.55; margin-top:8px;">Bike and vest UWB box placement overview</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 2 — Problem -->
+      <section>
+        <div class="accent-red">
+          <span class="tag tag-red">UWB Ranging — 2/12</span>
+          <h2>Problem</h2>
+          <p style="font-size: 0.75em; opacity: 0.8; margin-bottom: 12px;">Why test multiple configurations?</p>
+          <div class="two-col">
+            <ul>
+              <li>Multipath &amp; NLOS</li>
+              <li>Body masking</li>
+              <li>Bike frame reflections</li>
+              <li>Radio instability</li>
+              <li>Distance losses &amp; spikes</li>
+            </ul>
+            <div style="display:grid; gap:10px;">
+              <div>
+                <div style="font-size:0.52em; color:var(--green); font-weight:700; margin-bottom:4px;">Stable signal — continuous distance trace</div>
+                <img src="ressources/uwb_signal_stable.png" alt="Stable UWB distance signal"
+                     style="width:100%; max-height:165px; object-fit:contain; border-radius:12px; background:#fff; box-shadow:0 4px 18px rgba(0,0,0,0.32);">
+              </div>
+              <div>
+                <div style="font-size:0.52em; color:var(--red); font-weight:700; margin-bottom:4px;">Unstable signal — drops and spikes</div>
+                <img src="ressources/uwb_signal_unstable.png" alt="Unstable UWB distance signal with drops and spikes"
+                     style="width:100%; max-height:165px; object-fit:contain; border-radius:12px; background:#fff; box-shadow:0 4px 18px rgba(0,0,0,0.32);">
+              </div>
+            </div>
+          </div>
+          <div class="key-point">
+            Goal: determine which configurations yield a usable field measurement.
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 3 — Experiment Objective -->
+      <section>
+        <div class="accent-purple">
+          <span class="tag tag-purple">UWB Ranging — 3/12</span>
+          <h2>Experiment Objective</h2>
+          <p style="font-size: 0.75em; opacity: 0.8; margin-bottom: 12px;">Find the best compromise across:</p>
+          <div class="two-col">
+            <ul>
+              <li>Acquisition frequency</li>
+              <li>Signal stability</li>
+              <li>Continuity (no gaps)</li>
+              <li>Low spike rate</li>
+              <li>Multipath robustness</li>
+              <li>Overall link quality</li>
+            </ul>
+            <div class="key-point" style="margin-top:0;">
+              <strong>Working target — to be consolidated</strong><br>
+              Δdist p95 &lt; 10 cm<br>
+              spike / peak event rate &lt; 0.01%<br>
+              ideally close to 50 Hz acquisition
+              <br><br>
+              Compare not just mean distance or std, but dynamic behaviours across configurations.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 4 — Protocol -->
+      <section>
+        <div class="accent-green">
+          <span class="tag tag-green">UWB Ranging — 4/12</span>
+          <h2>General Protocol</h2>
+          <div class="two-col">
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 6px;">For each configuration:</p>
+              <ul>
+                <li>Select UWB mode</li>
+                <li>Select RF channel</li>
+                <li>Set box positions (bike / vest)</li>
+                <li>Start CSV recording</li>
+                <li>Ride same route</li>
+                <li>Stop &amp; export</li>
+                <li>Python comparative analysis</li>
+              </ul>
+            </div>
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 6px;">Constants across all runs:</p>
+              <ul>
+                <li>Same route &amp; speed</li>
+                <li>Same duration</li>
+                <li>Same hardware</li>
+                <li>Same positions (for direct comparisons)</li>
+              </ul>
+              <div style="text-align:center; margin-top:12px;">
+                <video src="ressources/android_app_protocol.mov" controls muted loop playsinline preload="metadata"
+                       style="height:300px; max-width:100%; object-fit:contain; border-radius:16px; background:#000; box-shadow:0 4px 24px rgba(0,0,0,0.35);">
+                  Android app protocol video
+                </video>
+                <div style="font-size:0.5em; opacity:0.55; margin-top:6px;">Android app recording and export workflow</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 5 — Max Speed -->
+      <section>
+        <div class="accent-yellow">
+          <span class="tag tag-yellow">UWB Ranging — 5/12</span>
+          <h2>Parameter 1 — Max Speed mode</h2>
+          <div class="two-col">
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 4px;"><strong>Config</strong></p>
+              <ul>
+                <li>UWB data rate: 6.8 Mbps</li>
+                <li>Target period: ~1 ms</li>
+                <li>Median filter: 1</li>
+                <li>Profile: FAST_DISTANCE_ONLY</li>
+              </ul>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:8px 0 4px;"><strong>Benefit</strong></p>
+              <ul>
+                <li>High temporal resolution</li>
+                <li>Many samples, tracks fast changes</li>
+              </ul>
+            </div>
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 4px;"><strong>Expected limits</strong></p>
+              <ul>
+                <li>More local jumps &amp; noise</li>
+                <li>Higher risk of impossible speeds</li>
+                <li>Sensitive to outliers</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 6 — Outdoor Robust -->
+      <section>
+        <div class="accent-orange">
+          <span class="tag tag-orange">UWB Ranging — 6/12</span>
+          <h2>Parameter 2 — Outdoor Robust mode</h2>
+          <div class="two-col">
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 4px;"><strong>Config</strong></p>
+              <ul>
+                <li>UWB data rate: 6.8 Mbps</li>
+                <li>Target period: ~30 ms</li>
+                <li>Median filter: 7</li>
+                <li>Profile: ROBUST_DETECTION</li>
+              </ul>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:8px 0 4px;"><strong>Benefit</strong></p>
+              <ul>
+                <li>Smoother signal, fewer spikes</li>
+                <li>Better continuity &amp; field readability</li>
+              </ul>
+            </div>
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 4px;"><strong>Expected limits</strong></p>
+              <ul>
+                <li>Lower frequency</li>
+                <li>Fast variations less detailed</li>
+              </ul>
+              <div class="key-point" style="margin-top:12px;">
+                Trades temporal resolution for stability.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 7 — RF Channel -->
+      <section>
+        <div class="accent-blue">
+          <span class="tag tag-blue">UWB Ranging — 7/12</span>
+          <h2>Parameter 3 — RF Channel</h2>
+          <div class="two-col">
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 6px;">Two channels compared:</p>
+              <ul>
+                <li><strong>Channel 5</strong></li>
+                <li><strong>Channel 9</strong></li>
+              </ul>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:10px 0 4px;">Channel can affect sensitivity to:</p>
+              <ul>
+                <li>Radio environment</li>
+                <li>Reflections &amp; multipath</li>
+                <li>Metal bike frame</li>
+                <li>Antenna orientation</li>
+              </ul>
+            </div>
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 8px;"><strong>Test matrix</strong></p>
+              <table style="font-size: 0.65em; border-collapse: collapse; width: 100%;">
+                <thead>
+                  <tr>
+                    <th style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2);">Mode</th>
+                    <th style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2);">Ch 5</th>
+                    <th style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2);">Ch 9</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2);">Max Speed</td>
+                    <td style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2); text-align:center;">Test A</td>
+                    <td style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2); text-align:center;">Test B</td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2);">Outdoor Robust</td>
+                    <td style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2); text-align:center;">Test C</td>
+                    <td style="padding: 6px 10px; border: 1px solid rgba(255,255,255,0.2); text-align:center;">Test D</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 8 — Box Positions -->
+      <section>
+        <div class="accent-purple">
+          <span class="tag tag-purple">UWB Ranging — 8/12</span>
+          <h2>Box Positions</h2>
+          <div class="two-col">
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 6px;">Positions coded in app:</p>
+              <ul>
+                <li>1 / −1</li>
+                <li>2 / −2</li>
+                <li>3 / −3</li>
+              </ul>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:10px 0 4px;">Impact measured on:</p>
+              <ul>
+                <li>Stability &amp; multipath</li>
+                <li>Link quality</li>
+                <li>Measurement loss rate</li>
+              </ul>
+              <div class="key-point" style="margin-top:12px; font-size:0.65em;">
+                Positions are automatically logged in CSV alongside other parameters.
+              </div>
+            </div>
+            <div style="text-align:center;">
+                  <img src="ressources/uwb_box_positions_numbered.png" alt="Bike and vest numbered box positions"
+                   style="width: 100%; max-height: 430px; object-fit: contain; border-radius: 16px; background: #fff; box-shadow: 0 4px 24px rgba(0,0,0,0.35);">
+              <div style="font-size:0.5em; opacity:0.55; margin-top:8px;">Numbered bike and vest mounting positions used during UWB tests</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 9 — KPIs -->
+      <section>
+        <div class="accent-green">
+          <span class="tag tag-green">UWB Ranging — 9/12</span>
+          <h2>KPIs Analysed</h2>
+          <div class="two-col">
+            <ul>
+              <li><strong>Distance std</strong> — global dispersion</li>
+              <li><strong>Δdist p95</strong> — point-to-point jumps</li>
+              <li><strong>Peak / jump rate</strong> — samples above dynamic jump threshold</li>
+              <li><strong>Impossible speed rate</strong> — non-physical velocities</li>
+              <li><strong>Rolling MAD p95</strong> — local instability</li>
+              <li><strong>Bad burst max</strong> — longest bad-point run</li>
+              <li><strong>Link reliability</strong> — overall quality score</li>
+              <li><strong>NLOS / CIR</strong> — multipath &amp; non-line-of-sight</li>
+            </ul>
+            <div>
+              <div class="key-point" style="margin-top:0;">
+                Global std alone is not enough.<br>
+                Two signals can share similar std yet have very different visual stability.
+              </div>
+              <div style="text-align:center; margin-top:16px;">
+                <img src="ressources/uwb_peak_kpi_example.png" alt="Peak KPI example with jump threshold"
+                     style="width:100%; max-height:250px; object-fit:contain; border-radius:14px; background:#fff; box-shadow:0 4px 20px rgba(0,0,0,0.35);">
+                <div style="font-size:0.5em; opacity:0.55; margin-top:6px;">Red crosses = peak events counted in the spike / jump KPI</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 10 — Preliminary Results Table -->
+      <section>
+        <div class="accent-red">
+          <span class="tag tag-red">UWB Ranging — 10/12</span>
+          <h2>Results from Summary CSV</h2>
+          <p style="font-size: 0.62em; opacity: 0.72; margin:0 0 6px;">
+            Based on the updated exported comparison table: 20 usable runs, 1 very short run excluded, mixed positions.
+          </p>
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th>Configuration</th>
+                <th>Data</th>
+                <th>Avg score</th>
+                <th>Dynamic stability</th>
+                <th>Takeaway</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Max Speed · Ch 9</strong><br><span class="muted">FAST_DISTANCE_ONLY</span></td>
+                <td><span class="result-good">2 runs</span><br><span class="muted">positions 2/2, 1/1<br>~57 Hz</span></td>
+                <td><span class="result-good">9.09/10</span><br><span class="muted">best single run: 9.33</span></td>
+                <td><span class="result-warn">Instability 15.2/100</span><br><span class="muted">spikes 1.56% · Δdist p95 9.5 cm</span></td>
+                <td>Only mode near the 50 Hz target, but spike rate is too high; very clean in 2/2, noisy in 1/1.</td>
+              </tr>
+              <tr>
+                <td><strong>Outdoor Robust · Ch 9</strong><br><span class="muted">ROBUST_DETECTION</span></td>
+                <td><span class="result-good">4 runs</span><br><span class="muted">positions 2/2, −3/−3, 1/1, 3/3<br>~30.9 Hz</span></td>
+                <td><span class="result-warn">8.69/10</span><br><span class="muted">best single run: 8.87</span></td>
+                <td><span class="result-good">Instability 6.4/100</span><br><span class="muted">spikes 0.16% · Δdist p95 4.8 cm</span></td>
+                <td>Best Δdist p95 average; good robust candidate, but acquisition rate remains below the 50 Hz target.</td>
+              </tr>
+              <tr>
+                <td><strong>Outdoor Robust · Ch 5</strong><br><span class="muted">ROBUST_DETECTION</span></td>
+                <td><span class="result-good">14 runs</span><br><span class="muted">all tested positions<br>~30.9 Hz</span></td>
+                <td><span class="result-warn">8.58/10</span><br><span class="muted">best single run: 8.87</span></td>
+                <td><span class="result-good">Instability 6.3/100</span><br><span class="muted">spikes 0.11% · Δdist p95 8.0 cm</span></td>
+                <td>Largest evidence base; reliable robust baseline, but weaker positions pull the average down.</td>
+              </tr>
+              <tr>
+                <td><strong>Max Speed · Ch 5</strong><br><span class="muted">planned matrix cell</span></td>
+                <td><span class="result-risk">No run</span><br><span class="muted">not in summary CSV</span></td>
+                <td>—</td>
+                <td>—</td>
+                <td>Cannot rank yet; should be added only if we want a complete mode × channel matrix.</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="key-point" style="font-size:0.58em; margin-top:12px; padding:12px 16px;">
+            Caution: configurations are still not balanced across positions. Targets are not fully met yet: spike rate remains the main gap.
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 11 — Position Results -->
+      <section>
+        <div class="accent-purple">
+          <span class="tag tag-purple">UWB Ranging — 11/12</span>
+          <h2>Position Results</h2>
+          <p style="font-size: 0.62em; opacity: 0.72; margin:0 0 6px;">
+            Same summary CSV, grouped by bike / vest position. This suggests position may dominate the mode/channel effect.
+          </p>
+          <table class="results-table" style="font-size:0.50em;">
+            <thead>
+              <tr>
+                <th>Bike / Vest</th>
+                <th>Runs</th>
+                <th>Best config</th>
+                <th>Mean score</th>
+                <th>Instability</th>
+                <th>Interpretation</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>2 / 2</strong></td>
+                <td>4</td>
+                <td><span class="result-good">Max Speed · Ch 9</span><br><span class="muted">best 9.33/10</span></td>
+                <td><span class="result-good">8.96</span></td>
+                <td><span class="result-good">1.7/100</span><br><span class="muted">spikes 0.004%</span></td>
+                <td>Best observed position; closest to the working target.</td>
+              </tr>
+              <tr>
+                <td><strong>−1 / −1</strong></td>
+                <td>2</td>
+                <td>Outdoor Robust · Ch 5</td>
+                <td><span class="result-good">8.83</span></td>
+                <td><span class="result-good">0.8/100</span><br><span class="muted">0 spikes</span></td>
+                <td>Very clean, but only tested with robust Ch 5.</td>
+              </tr>
+              <tr>
+                <td><strong>3 / 3</strong></td>
+                <td>3</td>
+                <td>Outdoor Robust · Ch 5</td>
+                <td><span class="result-good">8.70</span></td>
+                <td><span class="result-good">5.3/100</span><br><span class="muted">spikes 0.17%</span></td>
+                <td>Good candidate; long Ch 9 run adds confidence but also some spikes.</td>
+              </tr>
+              <tr>
+                <td><strong>1 / 1</strong></td>
+                <td>6</td>
+                <td>Outdoor Robust · Ch 5</td>
+                <td><span class="result-warn">8.61</span></td>
+                <td><span class="result-warn">9.7/100</span><br><span class="muted">spikes 0.45%</span></td>
+                <td>Mixed: robust can be clean, but Max Speed is noisy here.</td>
+              </tr>
+              <tr>
+                <td><strong>−3 / −3</strong></td>
+                <td>3</td>
+                <td>Outdoor Robust · Ch 9</td>
+                <td><span class="result-warn">8.47</span></td>
+                <td><span class="result-warn">10.3/100</span><br><span class="muted">spikes 0.16%</span></td>
+                <td>Moderate degradation; retest Ch 5 vs Ch 9 under same ride.</td>
+              </tr>
+              <tr>
+                <td><strong>3 / −3</strong></td>
+                <td>2</td>
+                <td>Outdoor Robust · Ch 5</td>
+                <td><span class="result-risk">8.16</span></td>
+                <td><span class="result-risk">15.7/100</span><br><span class="muted">spikes 0.51%</span></td>
+                <td>Weakest observed position; likely a poor mounting geometry.</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="key-point" style="font-size:0.58em; margin-top:12px; padding:12px 16px;">
+            Takeaway: position 2/2 remains the strongest baseline. Position 3/−3 is consistently weak; 1/1 is highly mode-dependent.
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE UWB 12 — First Results -->
+      <section>
+        <div class="accent-red">
+          <span class="tag tag-red">UWB Ranging — 12/12</span>
+          <h2>First Results</h2>
+          <div class="two-col">
+            <div>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:0 0 4px;"><strong>Max Speed · Ch 9</strong></p>
+              <ul>
+                <li>Highest score observed at position 2/2</li>
+                <li>Meets the frequency target (~57 Hz)</li>
+                <li>Spike rate still too high at 1/1</li>
+              </ul>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:8px 0 4px;"><strong>Outdoor Robust</strong></p>
+              <ul>
+                <li>Lower cadence (~31 Hz)</li>
+                <li>Cleaner dynamic KPIs overall</li>
+                <li>Good baseline for field tests</li>
+              </ul>
+              <p style="font-size: 0.7em; opacity: 0.7; margin:8px 0 4px;"><strong>Position effect</strong></p>
+              <ul>
+                <li>2/2 remains strongest baseline</li>
+                <li>3/−3 is currently weakest</li>
+              </ul>
+            </div>
+            <div>
+              <div style="text-align:center;">
+                <img src="ressources/uwb_results_overlay.png" alt="Multi-sample overlay of UWB distance traces"
+                     style="width:100%; max-height:245px; object-fit:contain; border-radius:14px; background:#fff; box-shadow:0 4px 20px rgba(0,0,0,0.35);">
+                <div style="font-size:0.5em; opacity:0.55; margin-top:6px;">Overlay comparison — selected Max Speed vs Outdoor Robust runs</div>
+              </div>
+              <div class="key-point" style="margin-top:16px; font-size:0.65em;">
+                Current conclusion: more samples confirm the position effect.<br>
+                Next step: balanced 2/2 matrix + focused retest of weak geometries before final mode/channel ranking.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE — PARALLEL HARDWARE TRACK -->
+      <section>
+        <div class="accent-blue">
+          <span class="tag tag-blue">Parallel Track</span>
+          <h2>Custom Board Design</h2>
+          <div class="two-col">
+            <div>
+              <ul>
+                <li>In parallel, we are designing a dedicated electronics board</li>
+                <li>Based on the same Qorvo UWB module used in the current evaluation</li>
+                <li>Integrated inertial unit: BMI323</li>
+                <li>Objective: keep continuity between test firmware, RF behavior, and future hardware</li>
+              </ul>
+            </div>
+            <div>
+              <div style="text-align:center;">
+                <img src="ressources/custom_board_design_ujump_v1.png" alt="Custom board design preview"
+                     style="width:100%; max-height:315px; object-fit:contain; border-radius:14px; background:#e8edf2; box-shadow:0 4px 20px rgba(0,0,0,0.35);">
+                <div style="font-size:0.5em; opacity:0.55; margin-top:6px;">Dedicated acquisition board design — U-JUMP v1.0</div>
+              </div>
+              <div class="key-point" style="font-size:0.65em;">
+                The UWB experiment informs the hardware design: module choice, antenna constraints, power, BMI323 integration, and mechanical placement.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE — WHAT WE COULD DO TOGETHER -->
+      <section>
+        <div class="accent-green">
+          <span class="tag tag-green">With LEAPS</span>
+          <h2>What We Could Build Together</h2>
+          <div class="two-col">
+            <div>
+              <ul>
+                <li>Identify what the current UWB data really tells us</li>
+                <li>Consolidate the best mode, RF channel, antenna, and mounting choices</li>
+                <li>Challenge the KPI targets and the experimental protocol</li>
+                <li>Improve the architecture before moving toward product hardware</li>
+              </ul>
+            </div>
+            <div>
+              <div class="key-point" style="margin-top:0; border-color: var(--green); background: rgba(46,204,113,0.08);">
+                We need LEAPS expertise to identify, consolidate, and improve the solution — not only validate a component choice.
+              </div>
+              <div class="key-point" style="font-size:0.65em;">
+                Current working target:<br>
+                Δdist p95 &lt; 10 cm · spike / peak event rate &lt; 0.01% · acquisition close to 50 Hz.
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SLIDE THANK YOU -->
+      <section>
+        <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%;">
+          <img src="ressources/logo_libe_white.svg" alt="Libe" style="height: 80px; margin-bottom: 30px;">
+          <h2 style="font-size: 1.6em; margin-bottom: 10px;">Thank You</h2>
+          <p style="font-size: 0.7em; opacity: 0.5;">Any questions?</p>
+        </div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- Persistent Freejump watermark -->
+  <div class="freejump-watermark">
+    <img src="ressources/logo_freejump.svg" alt="Freejump">
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script>
+    Reveal.initialize({
+      hash: true,
+      slideNumber: true,
+      transition: 'slide',
+      transitionSpeed: 'fast',
+      center: true,
+      width: 1024,
+      height: 768,
+      margin: 0.08,
+    });
+  </script>
+</body>
+</html>

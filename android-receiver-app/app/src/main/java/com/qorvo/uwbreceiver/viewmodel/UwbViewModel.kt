@@ -35,14 +35,16 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
         RuntimeStore.state,
         settingsStore.thresholds,
         settingsStore.controls,
+        settingsStore.experiment,
         ticker,
-    ) { runtime, thresholds, controls, _ ->
+    ) { runtime, thresholds, controls, experiment, _ ->
         val nowElapsed = android.os.SystemClock.elapsedRealtime()
         val elapsed = runtime.sessionStartElapsedMs?.let { (nowElapsed - it) / 1000 } ?: 0
         UwbUiState(
             runtime = runtime,
             thresholds = thresholds,
             controls = controls,
+            experiment = experiment,
             elapsedSec = elapsed,
         )
     }.stateIn(
@@ -97,6 +99,14 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun applyRfChannel(value: Int) {
+        viewModelScope.launch {
+            settingsStore.updateRfChannel(value)
+            delay(200)
+            sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
+        }
+    }
+
     fun updateAcquisitionPeriodMs(value: Int) {
         viewModelScope.launch {
             settingsStore.updateAcquisitionPeriodMs(value)
@@ -106,6 +116,18 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
     fun updateRangingMode(value: RangingMode) {
         viewModelScope.launch {
             settingsStore.updateRangingMode(value)
+        }
+    }
+
+    fun updateBikeBoxPosition(value: Int) {
+        viewModelScope.launch {
+            settingsStore.updateBikeBoxPosition(value)
+        }
+    }
+
+    fun updateVestBoxPosition(value: Int) {
+        viewModelScope.launch {
+            settingsStore.updateVestBoxPosition(value)
         }
     }
 

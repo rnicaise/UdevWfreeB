@@ -33,6 +33,7 @@ import com.qorvo.uwbreceiver.MainActivity
 import com.qorvo.uwbreceiver.R
 import com.qorvo.uwbreceiver.data.ConnectedUwbRole
 import com.qorvo.uwbreceiver.data.CsvParser
+import com.qorvo.uwbreceiver.data.ExperimentSettings
 import com.qorvo.uwbreceiver.data.LinkState
 import com.qorvo.uwbreceiver.data.PhoneTelemetry
 import com.qorvo.uwbreceiver.data.RangingMode
@@ -40,6 +41,7 @@ import com.qorvo.uwbreceiver.data.RecordingManager
 import com.qorvo.uwbreceiver.data.RuntimeStore
 import com.qorvo.uwbreceiver.data.SettingsStore
 import com.qorvo.uwbreceiver.data.TestProfile
+import com.qorvo.uwbreceiver.data.UwbControlSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -78,9 +80,11 @@ class UwbForegroundService : Service() {
 
     private var medianWindow = 5
     private var requestedUwbDataRateKbps = 6800
+    private var requestedRfChannel = 5
     private var requestedAcquisitionPeriodMs = 20
     private var requestedRangingMode = RangingMode.SS_TWR
     private var requestedTestProfile = TestProfile.STABLE_FULL
+    private var currentExperiment = ExperimentSettings()
     private var lastAppliedUwbDataRateKbps: Int? = null
     private var connectedRole = ConnectedUwbRole.UNKNOWN
     private val distWindow = ArrayDeque<Float>()
@@ -372,7 +376,22 @@ class UwbForegroundService : Service() {
         val phoneTelemetry = snapshotPhoneTelemetry()
 
         RuntimeStore.onSample(sample, filtered, phoneTelemetry)
-        recordingManager.appendEnrichedSample(sample, filtered, phoneTelemetry)
+        recordingManager.appendEnrichedSample(
+            sample,
+            filtered,
+            phoneTelemetry,
+            RuntimeStore.state.value.transmissionQuality,
+            UwbControlSettings(
+                medianWindow = medianWindow,
+                uwbDataRateKbps = requestedUwbDataRateKbps,
+                rfChannel = requestedRfChannel,
+                acquisitionPeriodMs = requestedAcquisitionPeriodMs,
+                rangingMode = requestedRangingMode,
+                testProfile = requestedTestProfile,
+            ),
+            currentExperiment,
+            connectedRole,
+        )
     }
 
     private fun filterDistance(rawDistance: Float): Float {
@@ -416,15 +435,23 @@ class UwbForegroundService : Service() {
     private fun startSettingsObserver() {
         settingsJob?.cancel()
         settingsJob = serviceScope.launch {
-            settingsStore.controls.collectLatest { controls ->
-                val previousMedian = medianWindow
-                medianWindow = controls.medianWindow.coerceAtLeast(1)
-                requestedUwbDataRateKbps = controls.uwbDataRateKbps
-                requestedAcquisitionPeriodMs = controls.acquisitionPeriodMs
-                requestedRangingMode = controls.rangingMode
-                requestedTestProfile = controls.testProfile
-                if (medianWindow != previousMedian) {
-                    distWindow.clear()
+            launch {
+                settingsStore.controls.collectLatest { controls ->
+                    val previousMedian = medianWindow
+                    medianWindow = controls.medianWindow.coerceAtLeast(1)
+                    requestedUwbDataRateKbps = controls.uwbDataRateKbps
+                    requestedRfChannel = controls.rfChannel
+                    requestedAcquisitionPeriodMs = controls.acquisitionPeriodMs
+                    requestedRangingMode = controls.rangingMode
+                    requestedTestProfile = controls.testProfile
+                    if (medianWindow != previousMedian) {
+                        distWindow.clear()
+                    }
+                }
+            }
+            launch {
+                settingsStore.experiment.collectLatest { experiment ->
+                    currentExperiment = experiment
                 }
             }
         }
@@ -432,6 +459,7 @@ class UwbForegroundService : Service() {
 
     private fun applyUwbSettings() {
         val rate = requestedUwbDataRateKbps
+        val channel = requestedRfChannel
         val period = requestedAcquisitionPeriodMs
         val mode = effectiveRangingModeForRole(connectedRole)
         val profile = requestedTestProfile
@@ -446,18 +474,20 @@ class UwbForegroundService : Service() {
         applySettingsJob = serviceScope.launch {
             RuntimeStore.setLinkState(
                 RuntimeStore.state.value.linkState,
-                "Auto UWB: ${connectedRole.name} -> ${mode.name}, ${profile.name}, $rate kbps, $period ms"
+                "Auto UWB: ${connectedRole.name} -> ${mode.name}, ${profile.name}, ch$channel, $rate kbps, $period ms"
             )
 
             val sentProfile = sendCommandSlowly("CFG,TEST_PROFILE=${profile.name}\n")
             delay(COMMAND_GAP_MS)
             val sentRate = sendCommandSlowly("CFG,UWB_DATARATE_KBPS=$rate\n")
             delay(COMMAND_GAP_MS)
+            val sentChannel = sendCommandSlowly("CFG,UWB_CHANNEL=$channel\n")
+            delay(COMMAND_GAP_MS)
             val sentPeriod = sendCommandSlowly("CFG,ACQ_PERIOD_MS=$period\n")
             delay(COMMAND_GAP_MS)
             val sentMode = sendCommandSlowly("CFG,RANGING_MODE=${mode.name}\n")
 
-            if (sentProfile && sentRate && sentPeriod && sentMode) {
+            if (sentProfile && sentRate && sentChannel && sentPeriod && sentMode) {
                 lastAppliedUwbDataRateKbps = rate
             } else {
                 RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "UWB cmd pending (connect first)")

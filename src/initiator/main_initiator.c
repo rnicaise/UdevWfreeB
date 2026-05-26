@@ -34,6 +34,7 @@
 #include "../common/uwb_profiles.h"
 #include "../accel/accel.h"
 #include "../uart/uart_log.h"
+#include "../common/radio_quality.h"
 
 #define POLL_MSG_PROFILE_IDX      16
 #define POLL_MSG_SWITCH_TOKEN_IDX 17
@@ -141,7 +142,7 @@ static uint8_t pending_acq_token = 0;
 static bool acq_request_armed = false;
 
 static const uwb_runtime_profile_t *active_profile = NULL;
-static char output_buf[128];
+static char output_buf[224];
 static char cmd_buf[96];
 
 /* ── Config UWB (depuis le SDK) ── */
@@ -223,6 +224,7 @@ static int apply_profile_option(uint8_t opt)
     {
         return DWT_ERROR;
     }
+    radio_quality_enable_diagnostics();
 
     if (config_options.chan == 5)
     {
@@ -249,6 +251,7 @@ static bool parse_rate_command(const char *cmd, uint8_t *target_opt)
     const char *prefix = "CFG,UWB_DATARATE_KBPS=";
     size_t prefix_len = strlen(prefix);
     int rate;
+    uint8_t current_channel;
 
     if ((cmd == NULL) || (target_opt == NULL))
     {
@@ -261,18 +264,45 @@ static bool parse_rate_command(const char *cmd, uint8_t *target_opt)
     }
 
     rate = atoi(cmd + prefix_len);
+    current_channel = uwb_profile_channel_for_opt(current_profile_opt);
     if (rate <= 850)
     {
-        *target_opt = uwb_profile_opt_for_rate_kbps(rate);
+        *target_opt = uwb_profile_opt_for_channel_rate_kbps(current_channel, rate);
         return true;
     }
     if (rate >= 6800)
     {
-        *target_opt = uwb_profile_opt_for_rate_kbps(rate);
+        *target_opt = uwb_profile_opt_for_channel_rate_kbps(current_channel, rate);
         return true;
     }
 
     return false;
+}
+
+static bool parse_channel_command(const char *cmd, uint8_t *channel)
+{
+    const char *prefix = "CFG,UWB_CHANNEL=";
+    size_t prefix_len = strlen(prefix);
+    int requested_channel;
+
+    if ((cmd == NULL) || (channel == NULL))
+    {
+        return false;
+    }
+
+    if (strncmp(cmd, prefix, prefix_len) != 0)
+    {
+        return false;
+    }
+
+    requested_channel = atoi(cmd + prefix_len);
+    if ((requested_channel != 5) && (requested_channel != 9))
+    {
+        return false;
+    }
+
+    *channel = (uint8_t)requested_channel;
+    return true;
 }
 
 static bool parse_acq_period_command(const char *cmd, uint8_t *period_ms)
@@ -394,6 +424,7 @@ static void process_app_commands(void)
 static void handle_app_command(const char *cmd)
 {
     uint8_t requested_opt;
+    uint8_t requested_channel;
     uint8_t requested_period;
     uint8_t requested_test_profile;
     ranging_mode_t requested_mode;
@@ -419,6 +450,43 @@ static void handle_app_command(const char *cmd)
                  "ACK,TEST_PROFILE_APPLIED,profile=%s,id=%u",
                  test_profile_name(active_test_profile),
                  (unsigned int)active_test_profile);
+        uart_log_write(output_buf);
+        return;
+    }
+
+    if (parse_channel_command(cmd, &requested_channel))
+    {
+        requested_opt = uwb_profile_opt_for_channel_rate_kbps(requested_channel, active_profile != NULL ? active_profile->data_rate_kbps : 6800);
+
+        if (!is_supported_profile_opt(requested_opt))
+        {
+            uart_log_write("ERR,UWB_CHANNEL_UNSUPPORTED");
+            return;
+        }
+
+        if (requested_opt == current_profile_opt)
+        {
+            snprintf(output_buf, sizeof(output_buf),
+                     "ACK,UWB_CHANNEL_ALREADY_APPLIED,ch=%u,opt=%u",
+                     (unsigned int)requested_channel,
+                     (unsigned int)current_profile_opt);
+            uart_log_write(output_buf);
+            return;
+        }
+
+        pending_profile_opt = requested_opt;
+        pending_switch_token++;
+        if (pending_switch_token == 0u)
+        {
+            pending_switch_token = 1u;
+        }
+        switch_request_armed = true;
+
+        snprintf(output_buf, sizeof(output_buf),
+                 "ACK,UWB_CHANNEL_PENDING,ch=%u,opt=%u,token=%u",
+                 (unsigned int)requested_channel,
+                 (unsigned int)pending_profile_opt,
+                 (unsigned int)pending_switch_token);
         uart_log_write(output_buf);
         return;
     }
@@ -524,6 +592,7 @@ int ds_twr_initiator_custom(void)
         test_run_info((unsigned char *)"CONFIG FAILED");
         while (1) { };
     }
+    radio_quality_enable_diagnostics();
 
     /* Config puissance TX selon le canal */
     if (config_options.chan == 5)
@@ -612,7 +681,7 @@ int ds_twr_initiator_custom(void)
         tx_poll_msg[POLL_MSG_ACCEL_Y_IDX + 1]  = (uint8_t)((accel_data.y >> 8) & 0xFF);
         tx_poll_msg[POLL_MSG_ACCEL_Z_IDX]      = (uint8_t)(accel_data.z & 0xFF);
         tx_poll_msg[POLL_MSG_ACCEL_Z_IDX + 1]  = (uint8_t)((accel_data.z >> 8) & 0xFF);
-        tx_poll_msg[POLL_MSG_PROFILE_IDX] = current_profile_opt;
+        tx_poll_msg[POLL_MSG_PROFILE_IDX] = switch_request_armed ? pending_profile_opt : current_profile_opt;
         tx_poll_msg[POLL_MSG_SWITCH_TOKEN_IDX] = switch_request_armed ? pending_switch_token : 0u;
         tx_poll_msg[POLL_MSG_ACQ_PERIOD_IDX] = acquisition_period_ms;
         tx_poll_msg[POLL_MSG_ACQ_TOKEN_IDX] = acq_request_armed ? pending_acq_token : 0u;
@@ -719,6 +788,7 @@ int ds_twr_initiator_custom(void)
                         uint32_t resp_rx_ts_32 = (uint32_t)resp_rx_ts;
                         uint32_t rtd_init;
                         uint32_t reply_resp;
+                        radio_quality_t radio_quality;
                         float clock_offset_ratio;
                         float tof_dtu;
                         uint32_t ms;
@@ -728,19 +798,38 @@ int ds_twr_initiator_custom(void)
 
                         rtd_init = resp_rx_ts_32 - poll_tx_ts_32;
                         reply_resp = responder_resp_tx_ts - responder_poll_rx_ts;
-                        clock_offset_ratio = (float)dwt_readclockoffset() * (float)CLOCK_OFFSET_PPM_TO_RATIO;
+                        radio_quality_read(&radio_quality);
+                        clock_offset_ratio = radio_quality.clock_offset_ppm / 1000000.0f;
                         tof_dtu = ((float)rtd_init - ((float)reply_resp * (1.0f - clock_offset_ratio))) / 2.0f;
 
                         distance = tof_dtu * (float)DWT_TIME_UNITS * (float)SPEED_OF_LIGHT;
                         ranging_count++;
 
-                        ms = (NRF_RTC2->COUNTER * 1000) / 32768;
+                        ms = (uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u);
                         snprintf(output_buf, sizeof(output_buf),
-                                 "%lu,%lu,%.2f",
+                                 "%lu,%lu,%.2f,%.1f,%.1f,%.2f,%u,%u,%.2f,%u,%d",
                                  (unsigned long)ms,
                                  (unsigned long)ranging_count,
-                                 (double)distance);
+                                 (double)distance,
+                                 (double)radio_quality.rx_power_dbm,
+                                 (double)radio_quality.fp_power_dbm,
+                                 (double)radio_quality.clock_offset_ppm,
+                                 (unsigned int)radio_quality.score_10,
+                                 (unsigned int)radio_quality.nlos_score_10,
+                                 (double)radio_quality.peak_to_fp_samples,
+                                 (unsigned int)radio_quality.fp_conf_level,
+                                 (int)radio_quality.sts_quality);
                         uart_log_write(output_buf);
+
+                        if (switch_request_armed && (pending_switch_token != 0u) && (tx_poll_msg[POLL_MSG_SWITCH_TOKEN_IDX] == pending_switch_token))
+                        {
+                            if (apply_profile_option(pending_profile_opt) == DWT_SUCCESS)
+                            {
+                                current_profile_opt = pending_profile_opt;
+                                switch_request_armed = false;
+                                test_run_info((unsigned char *)"UWB CHANNEL SWITCHED");
+                            }
+                        }
                     }
                 }
                 else

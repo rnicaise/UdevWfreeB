@@ -12,6 +12,14 @@ data class CsvSample(
     val rax: Int,
     val ray: Int,
     val raz: Int,
+    val rxPowerDbm: Float? = null,
+    val firstPathPowerDbm: Float? = null,
+    val clockOffsetPpm: Float? = null,
+    val signalQuality10: Float? = null,
+    val nlosQuality10: Float? = null,
+    val peakToFirstPathSamples: Float? = null,
+    val firstPathConfidence: Int? = null,
+    val stsQuality: Int? = null,
     val responderAcquisitionPeriodMs: Int? = null,
     val initiatorAcquisitionPeriodMs: Int? = null,
     val responderProfileOpt: Int? = null,
@@ -30,6 +38,35 @@ enum class ConnectedUwbRole {
     RESPONDER,
 }
 
+data class SessionQuality(
+    val speedSpikeCount: Long = 0,
+    val frequencyAnomalyCount: Long = 0,
+    val sessionStd: Float? = null,
+    val sessionSamples: Long = 0,
+    val lastRelativeSpeedMps: Float? = null,
+    val lastInstantHz: Float? = null,
+    val lastSignalQuality10: Float? = null,
+    val meanSignalQuality10: Float? = null,
+)
+
+data class TransmissionQuality(
+    val stabilityScore10: Float? = null,
+    val smoothnessScore10: Float? = null,
+    val timingScore10: Float? = null,
+    val dropoutScore10: Float? = null,
+    val rollingStd5sM: Float? = null,
+    val lastDeltaM: Float? = null,
+    val lastRelativeSpeedMps: Float? = null,
+    val lastInstantHz: Float? = null,
+    val timingAnomalyRate: Float? = null,
+    val validRate5s: Float? = null,
+    val jumpRate5s: Float? = null,
+    val jumpScore10: Float? = null,
+    val badBurstMax: Int = 0,
+    val nlosScore10: Float? = null,
+    val linkReliabilityScore10: Float? = null,
+)
+
 data class RuntimeState(
     val linkState: LinkState = LinkState.DISCONNECTED,
     val status: String = "Idle",
@@ -46,6 +83,8 @@ data class RuntimeState(
     val recordingName: String? = null,
     val lastSavedUri: Uri? = null,
     val invalidLines: Long = 0,
+    val sessionQuality: SessionQuality = SessionQuality(),
+    val transmissionQuality: TransmissionQuality = TransmissionQuality(),
 )
 
 data class DistanceThresholds(
@@ -56,9 +95,15 @@ data class DistanceThresholds(
 data class UwbControlSettings(
     val medianWindow: Int = 5,
     val uwbDataRateKbps: Int = 6800,
+    val rfChannel: Int = 5,
     val acquisitionPeriodMs: Int = 20,
     val rangingMode: RangingMode = RangingMode.DS_TWR,
     val testProfile: TestProfile = TestProfile.STABLE_FULL,
+)
+
+data class ExperimentSettings(
+    val bikeBoxPosition: Int = 1,
+    val vestBoxPosition: Int = 1,
 )
 
 enum class RangingMode {
@@ -90,5 +135,6 @@ data class UwbUiState(
     val runtime: RuntimeState = RuntimeState(),
     val thresholds: DistanceThresholds = DistanceThresholds(),
     val controls: UwbControlSettings = UwbControlSettings(),
+    val experiment: ExperimentSettings = ExperimentSettings(),
     val elapsedSec: Long = 0,
 )

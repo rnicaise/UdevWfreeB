@@ -17,6 +17,7 @@
 #include "../common/uwb_profiles.h"
 #include "../accel/accel.h"
 #include "../uart/uart_log.h"
+#include "../common/radio_quality.h"
 
 #define POLL_MSG_PROFILE_IDX      16
 #define POLL_MSG_SWITCH_TOKEN_IDX 17
@@ -112,7 +113,7 @@ static uint32_t responder_accel_sample_count = 0;
 
 static const uwb_runtime_profile_t *active_profile = NULL;
 
-static char output_buf[192];
+static char output_buf[320];
 static char cmd_buf[96];
 
 typedef enum
@@ -198,6 +199,7 @@ static int apply_profile_option(uint8_t opt)
     {
         return DWT_ERROR;
     }
+    radio_quality_enable_diagnostics();
 
     if (config_options.chan == 5)
     {
@@ -222,6 +224,7 @@ static bool parse_rate_command(const char *cmd, uint8_t *target_opt)
     const char *prefix = "CFG,UWB_DATARATE_KBPS=";
     size_t prefix_len = strlen(prefix);
     int rate;
+    uint8_t current_channel;
 
     if ((cmd == NULL) || (target_opt == NULL))
     {
@@ -234,18 +237,45 @@ static bool parse_rate_command(const char *cmd, uint8_t *target_opt)
     }
 
     rate = atoi(cmd + prefix_len);
+    current_channel = uwb_profile_channel_for_opt(current_profile_opt);
     if (rate <= 850)
     {
-        *target_opt = uwb_profile_opt_for_rate_kbps(rate);
+        *target_opt = uwb_profile_opt_for_channel_rate_kbps(current_channel, rate);
         return true;
     }
     if (rate >= 6800)
     {
-        *target_opt = uwb_profile_opt_for_rate_kbps(rate);
+        *target_opt = uwb_profile_opt_for_channel_rate_kbps(current_channel, rate);
         return true;
     }
 
     return false;
+}
+
+static bool parse_channel_command(const char *cmd, uint8_t *channel)
+{
+    const char *prefix = "CFG,UWB_CHANNEL=";
+    size_t prefix_len = strlen(prefix);
+    int requested_channel;
+
+    if ((cmd == NULL) || (channel == NULL))
+    {
+        return false;
+    }
+
+    if (strncmp(cmd, prefix, prefix_len) != 0)
+    {
+        return false;
+    }
+
+    requested_channel = atoi(cmd + prefix_len);
+    if ((requested_channel != 5) && (requested_channel != 9))
+    {
+        return false;
+    }
+
+    *channel = (uint8_t)requested_channel;
+    return true;
 }
 
 static bool parse_acq_period_command(const char *cmd, uint8_t *period_ms)
@@ -367,6 +397,7 @@ static void process_app_commands(void)
 static void handle_app_command(const char *cmd)
 {
     uint8_t requested_opt;
+    uint8_t requested_channel;
     uint8_t requested_period;
     uint8_t requested_test_profile;
     ranging_mode_t requested_mode;
@@ -392,6 +423,43 @@ static void handle_app_command(const char *cmd)
                  "ACK,TEST_PROFILE_APPLIED,profile=%s,id=%u",
                  test_profile_name(current_test_profile),
                  (unsigned int)current_test_profile);
+        uart_log_write(output_buf);
+        return;
+    }
+
+    if (parse_channel_command(cmd, &requested_channel))
+    {
+        requested_opt = uwb_profile_opt_for_channel_rate_kbps(requested_channel, active_profile != NULL ? active_profile->data_rate_kbps : 6800);
+
+        if (!is_supported_profile_opt(requested_opt))
+        {
+            uart_log_write("ERR,UWB_CHANNEL_UNSUPPORTED");
+            return;
+        }
+
+        if (requested_opt == current_profile_opt)
+        {
+            snprintf(output_buf, sizeof(output_buf),
+                     "ACK,UWB_CHANNEL_ALREADY_APPLIED,ch=%u,opt=%u",
+                     (unsigned int)requested_channel,
+                     (unsigned int)current_profile_opt);
+            uart_log_write(output_buf);
+            return;
+        }
+
+        pending_profile_opt = requested_opt;
+        pending_switch_token++;
+        if (pending_switch_token == 0u)
+        {
+            pending_switch_token = 1u;
+        }
+        switch_pending = true;
+
+        snprintf(output_buf, sizeof(output_buf),
+                 "ACK,UWB_CHANNEL_PENDING,ch=%u,opt=%u,token=%u",
+                 (unsigned int)requested_channel,
+                 (unsigned int)pending_profile_opt,
+                 (unsigned int)pending_switch_token);
         uart_log_write(output_buf);
         return;
     }
@@ -516,6 +584,7 @@ int ds_twr_responder_custom(void)
         test_run_info((unsigned char *)"CONFIG FAILED");
         while (1) { };
     }
+    radio_quality_enable_diagnostics();
 
     if (config_options.chan == 5)
     {
@@ -616,13 +685,20 @@ int ds_twr_responder_custom(void)
                     period_after_final = false;
                 }
 
-                if (switch_pending && (frame_len > POLL_MSG_SWITCH_TOKEN_IDX))
+                if (frame_len > POLL_MSG_SWITCH_TOKEN_IDX)
                 {
                     uint8_t initiator_opt = rx_buffer[POLL_MSG_PROFILE_IDX];
                     uint8_t req_token = rx_buffer[POLL_MSG_SWITCH_TOKEN_IDX];
 
-                    if ((initiator_opt == current_profile_opt) && (req_token == pending_switch_token))
+                    if (switch_pending && (req_token == pending_switch_token) && ((initiator_opt == current_profile_opt) || (initiator_opt == pending_profile_opt)))
                     {
+                        switch_after_final = true;
+                    }
+                    else if ((req_token != 0u) && is_supported_profile_opt(initiator_opt) && (initiator_opt != current_profile_opt))
+                    {
+                        pending_profile_opt = initiator_opt;
+                        pending_switch_token = req_token;
+                        switch_pending = true;
                         switch_after_final = true;
                     }
                 }
@@ -674,6 +750,17 @@ int ds_twr_responder_custom(void)
                     waitforsysstatus(NULL, NULL, DWT_INT_TXFRS_BIT_MASK, 0);
                     dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
                     frame_seq_nb++;
+
+                    if (switch_after_final)
+                    {
+                        if (apply_profile_option(pending_profile_opt) == DWT_SUCCESS)
+                        {
+                            current_profile_opt = pending_profile_opt;
+                            switch_pending = false;
+                            switch_after_final = false;
+                            uart_log_write("ACK,UWB_CHANNEL_SWITCHED");
+                        }
+                    }
                     continue;
                 }
 
@@ -735,23 +822,42 @@ int ds_twr_responder_custom(void)
                         }
 
                         {
-                            uint32_t ms = (NRF_RTC2->COUNTER * 1000) / 32768;
+                            uint32_t ms = (uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u);
+                            radio_quality_t radio_quality;
+                            radio_quality_read(&radio_quality);
+
                             if ((current_test_profile == UWB_TEST_PROFILE_FAST_DISTANCE_ONLY) ||
                                 (current_test_profile == UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY))
                             {
                                 snprintf(output_buf, sizeof(output_buf),
-                                "%lu,%lu,%.2f",
+                                "%lu,%lu,%.2f,%.1f,%.1f,%.2f,%u,%u,%.2f,%u,%d",
                                 (unsigned long)ms,
                                 (unsigned long)ranging_count,
-                                distance);
+                                distance,
+                                (double)radio_quality.rx_power_dbm,
+                                (double)radio_quality.fp_power_dbm,
+                                (double)radio_quality.clock_offset_ppm,
+                                (unsigned int)radio_quality.score_10,
+                                (unsigned int)radio_quality.nlos_score_10,
+                                (double)radio_quality.peak_to_fp_samples,
+                                (unsigned int)radio_quality.fp_conf_level,
+                                (int)radio_quality.sts_quality);
                             }
                             else if (current_test_profile == UWB_TEST_PROFILE_DIAGNOSTICS_FULL)
                             {
                                 snprintf(output_buf, sizeof(output_buf),
-                                "%lu,%lu,%.2f,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%u",
+                                "%lu,%lu,%.2f,%.1f,%.1f,%.2f,%u,%u,%.2f,%u,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%u,%u",
                                 (unsigned long)ms,
                                 (unsigned long)ranging_count,
                                 distance,
+                                (double)radio_quality.rx_power_dbm,
+                                (double)radio_quality.fp_power_dbm,
+                                (double)radio_quality.clock_offset_ppm,
+                                (unsigned int)radio_quality.score_10,
+                                (unsigned int)radio_quality.nlos_score_10,
+                                (double)radio_quality.peak_to_fp_samples,
+                                (unsigned int)radio_quality.fp_conf_level,
+                                (int)radio_quality.sts_quality,
                                 (int)accel_rx[0], (int)accel_rx[1], (int)accel_rx[2],
                                 (int)accel_local.x, (int)accel_local.y, (int)accel_local.z,
                                 (unsigned int)current_acq_period_ms,
@@ -764,10 +870,18 @@ int ds_twr_responder_custom(void)
                             else
                             {
                                 snprintf(output_buf, sizeof(output_buf),
-                                "%lu,%lu,%.2f,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u",
+                                "%lu,%lu,%.2f,%.1f,%.1f,%.2f,%u,%u,%.2f,%u,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u",
                                 (unsigned long)ms,
                                 (unsigned long)ranging_count,
                                 distance,
+                                (double)radio_quality.rx_power_dbm,
+                                (double)radio_quality.fp_power_dbm,
+                                (double)radio_quality.clock_offset_ppm,
+                                (unsigned int)radio_quality.score_10,
+                                (unsigned int)radio_quality.nlos_score_10,
+                                (double)radio_quality.peak_to_fp_samples,
+                                (unsigned int)radio_quality.fp_conf_level,
+                                (int)radio_quality.sts_quality,
                                 (int)accel_rx[0], (int)accel_rx[1], (int)accel_rx[2],
                                 (int)accel_local.x, (int)accel_local.y, (int)accel_local.z,
                                 (unsigned int)current_acq_period_ms,

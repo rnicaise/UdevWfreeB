@@ -17,9 +17,12 @@ class SettingsStore(private val context: Context) {
     private val keyOrange = floatPreferencesKey("threshold_orange_max")
     private val keyMedianWindow = intPreferencesKey("median_window")
     private val keyUwbDataRateKbps = intPreferencesKey("uwb_data_rate_kbps")
+    private val keyRfChannel = intPreferencesKey("rf_channel")
     private val keyAcquisitionPeriodMs = intPreferencesKey("acquisition_period_ms")
     private val keyRangingMode = intPreferencesKey("ranging_mode")
     private val keyTestProfile = intPreferencesKey("test_profile")
+    private val keyBikeBoxPosition = intPreferencesKey("bike_box_position")
+    private val keyVestBoxPosition = intPreferencesKey("vest_box_position")
 
     val thresholds: Flow<DistanceThresholds> = context.dataStore.data.map { pref ->
         DistanceThresholds(
@@ -34,9 +37,17 @@ class SettingsStore(private val context: Context) {
         UwbControlSettings(
             medianWindow = (pref[keyMedianWindow] ?: 5).coerceIn(1, 31),
             uwbDataRateKbps = 6800,
+            rfChannel = sanitizeRfChannel(pref[keyRfChannel] ?: 5),
             acquisitionPeriodMs = (pref[keyAcquisitionPeriodMs] ?: 20).coerceIn(1, 200),
             rangingMode = if (modeRaw == 1) RangingMode.SS_TWR else RangingMode.DS_TWR,
             testProfile = TestProfile.entries.getOrElse(testProfileRaw) { TestProfile.STABLE_FULL },
+        )
+    }
+
+    val experiment: Flow<ExperimentSettings> = context.dataStore.data.map { pref ->
+        ExperimentSettings(
+            bikeBoxPosition = sanitizeBoxPosition(pref[keyBikeBoxPosition] ?: 1),
+            vestBoxPosition = sanitizeBoxPosition(pref[keyVestBoxPosition] ?: 1),
         )
     }
 
@@ -64,6 +75,12 @@ class SettingsStore(private val context: Context) {
         }
     }
 
+    suspend fun updateRfChannel(value: Int) {
+        context.dataStore.edit { pref ->
+            pref[keyRfChannel] = sanitizeRfChannel(value)
+        }
+    }
+
     suspend fun updateAcquisitionPeriodMs(value: Int) {
         context.dataStore.edit { pref ->
             pref[keyAcquisitionPeriodMs] = value.coerceIn(1, 200)
@@ -80,5 +97,29 @@ class SettingsStore(private val context: Context) {
         context.dataStore.edit { pref ->
             pref[keyTestProfile] = value.ordinal
         }
+    }
+
+    suspend fun updateBikeBoxPosition(value: Int) {
+        context.dataStore.edit { pref ->
+            pref[keyBikeBoxPosition] = sanitizeBoxPosition(value)
+        }
+    }
+
+    suspend fun updateVestBoxPosition(value: Int) {
+        context.dataStore.edit { pref ->
+            pref[keyVestBoxPosition] = sanitizeBoxPosition(value)
+        }
+    }
+
+    private fun sanitizeBoxPosition(value: Int): Int {
+        return if (value in BOX_POSITIONS) value else 1
+    }
+
+    private fun sanitizeRfChannel(value: Int): Int {
+        return if (value == 9) 9 else 5
+    }
+
+    companion object {
+        val BOX_POSITIONS = listOf(1, -1, 2, -2, 3, -3)
     }
 }
