@@ -1,114 +1,164 @@
-# UWB Ranging Minimal — DS-TWR sans FiRa
+# UWB Ranging Firmware Architecture (SS-TWR)
 
-Système de mesure de distance UWB entre deux modules Qorvo DW3000,
-basé sur le protocole Double-Sided Two-Way Ranging (DS-TWR).
+This repository contains embedded firmware for a two-board UWB ranging system based on DW3000 + nRF52.
 
-## Guide développeur détaillé
+README.md and README_DEV.md are intentionally identical in this branch.
+The goal is to provide a technical architecture guide (not a beginner C tutorial).
 
-Pour une explication pas à pas du code embarqué (niveau débutant C), lire:
+## 1) Current Runtime Scope
 
-- [README_DEV.md](README_DEV.md)
+Current production-oriented behavior:
+- SS-TWR is the active live workflow
+- distance is computed on the initiator
+- responder provides delayed response timestamps
+- initiator outputs CSV on UART at 460800 baud
 
-## Architecture du projet
+Important note:
+- The codebase still contains some DS-oriented compatibility paths and legacy profile options.
+- The active high-rate workflow is SS-TWR with FAST/TURBO test profiles.
 
-```
-uwb-ranging/
-├── README.md                  ← ce fichier
-├── README_DEV.md              ← guide dev détaillé (débutant C)
-├── CMakeLists.txt             ← build principal (pointe vers le SDK)
-├── CMakePresets.json           ← presets de build (debug/release)
-│
-├── src/
-│   ├── initiator/
-│   │   └── main_initiator.c   ← firmware Module A (envoie Poll, calcule distance)
-│   │
-│   ├── responder/
-│   │   └── main_responder.c   ← firmware Module B (répond au Poll)
-│   │
-│   └── common/
-│       ├── ranging.h           ← types et constantes partagés
-│       └── ranging.c           ← fonctions utilitaires partagées
-```
+## 2) Firmware Architecture Map
 
-## Comment ça fonctionne
+Main code areas:
+- `src/main.c`: role entrypoint selection (`UWB_ROLE_INITIATOR` or `UWB_ROLE_RESPONDER`)
+- `src/initiator/main_initiator.c`: initiator ranging loop, SS distance computation, CSV output
+- `src/responder/main_responder.c`: responder RX/TX scheduling and timestamp embedding
+- `src/common/ranging.h`: shared protocol constants and timing macros
+- `src/common/uwb_profiles.c`: radio profile definitions and rate/channel mapping
+- `src/common/uwb_profiles.h`: runtime profile structure and API
+- `src/uart/uart_log.c`: UART TX/RX implementation
+- `src/platform/*` and `src/board/*`: board-level hardware adaptation
 
-### Protocole DS-TWR (3 messages)
+Build-level structure:
+- `CMakePresets.json`: role-specific build presets
+- `CMakeLists.txt`: top-level firmware build
+- `vendor/sdk`: vendored platform and DW3 SDK components
 
-```
-Module A (Initiator)              Module B (Responder)
-       |                                  |
-  t1   |-------- POLL ------------------>| t2
-       |                                  |
-  t4   |<------- RESPONSE ---------------| t3
-       |                                  |
-  t5   |-------- FINAL ----------------->| t6
-       |                                  |
-       |  (A envoie t1,t4,t5 dans FINAL)  |
-       |                                  |
-       |  B calcule la distance avec      |
-       |  les 6 timestamps (t1..t6)       |
-```
+## 3) Where the SS-TWR Logic Lives
 
-### Formule DS-TWR
+### Initiator side (distance computation)
+Primary file:
+- `src/initiator/main_initiator.c`
 
-```
-Ra = t4 - t1    (round-trip A)
-Rb = t6 - t3    (round-trip B)
-Da = t5 - t4    (délai traitement A)
-Db = t3 - t2    (délai traitement B)
+Key SS-TWR path:
+1. Receive RESPONSE frame
+2. Read responder timestamps from response payload
+3. Compute round-trip and reply delay
+4. Apply clock-offset correction
+5. Convert ToF to meters
+6. Emit CSV (`ms,sample,dist`)
 
-ToF = (Ra × Rb - Da × Db) / (Ra + Rb + Da + Db)
-Distance = ToF × vitesse_lumière
-```
+The hot-path function used for output formatting is `write_distance_csv(...)`.
 
-**Avantage DS-TWR** : les erreurs de clock s'annulent grâce au double
-aller-retour → pas besoin de correction clockOffset comme en SS-TWR.
+### Responder side (timestamped delayed response)
+Primary file:
+- `src/responder/main_responder.c`
 
-## Dépendances
+Key SS-TWR responder path:
+1. Receive POLL
+2. Capture `poll_rx_ts`
+3. Schedule delayed TX based on profile (`responder_ss_poll_rx_to_resp_tx_dly_uus`)
+4. Embed `poll_rx_ts` and `resp_tx_ts` in response
+5. Send delayed RESPONSE
 
-Ce projet utilise le SDK Qorvo **DW3_QM33_SDK_1** comme dépendance externe.
-Le chemin vers le SDK est configuré dans `CMakeLists.txt` via la variable
-`QORVO_SDK_PATH`.
+## 4) Profile System and Where It Is Defined
 
-### Prérequis
+Profile definitions are centralized in:
+- `src/common/uwb_profiles.c`
 
-- CMake ≥ 3.20
-- Ninja
-- ARM GNU Toolchain 12.2 (`arm-none-eabi-gcc`)
-- SDK Qorvo DW3_QM33_SDK_1
+The static `profiles[]` table defines per-profile:
+- PHY config (`dwt_config_t`)
+- initiator and responder timing delays/timeouts
+- preamble timeout
+- nominal data rate field (`data_rate_kbps`)
 
-## Build
+Current profile options in this table:
+- `UWB_PROFILE_OPT_6M8_STABLE_CH5`
+- `UWB_PROFILE_OPT_6M8_STABLE_CH9`
+- `UWB_PROFILE_OPT_850K_ROBUST`
+
+### About `UWB_PROFILE_OPT_850K_ROBUST`
+
+This profile is defined with robust PHY/timing values, including:
+- `DWT_BR_850K`
+- `DWT_PLEN_1024`
+- `DWT_PAC32`
+- longer RX/TX delays and timeouts
+
+In `uwb_profile_opt_for_channel_rate_kbps(...)`:
+- rates `<= 850` map to `UWB_PROFILE_OPT_850K_ROBUST`
+- otherwise, channel 9 maps to 6M8 CH9
+- default is 6M8 CH5
+
+So this robust profile is still part of the runtime profile layer even if the fastest SS workflow typically runs at 6M8.
+
+## 5) Test Profiles vs PHY Profiles
+
+There are two concept layers that are easy to confuse:
+
+1. Test profiles (application behavior):
+- examples: `FAST_DISTANCE_ONLY`, `TURBO_DISTANCE_ONLY`
+- used to control runtime behavior, sampling strategy, and hot-path overhead
+
+2. PHY/runtime radio profiles (`uwb_profiles.c`):
+- examples: `6M8_STABLE_CH5`, `6M8_STABLE_CH9`, `850K_ROBUST`
+- used to configure DW3000 PHY + timing
+
+Both layers influence observed performance and robustness.
+
+## 6) Key Timing Constants
+
+Global shared timing constants are in:
+- `src/common/ranging.h`
+
+Examples used by active SS path:
+- `POLL_TX_TO_RESP_RX_DLY_UUS`
+- `SS_POLL_RX_TO_RESP_TX_DLY_UUS`
+- `RESP_RX_TIMEOUT_UUS`
+- `RNG_DELAY_MS`
+
+These constants feed profile timing in `uwb_profiles.c` and ultimately shape throughput/stability tradeoffs.
+
+## 7) UART Contract
+
+Current primary runtime CSV output:
+- `ms,sample,dist`
+
+UART configuration:
+- firmware side configured in `src/uart/uart_log.c`
+- current operating baud is 460800
+
+## 8) Build and Flash
+
+Build from repository root:
 
 ```bash
-# Compiler l'initiator (Module A)
 cmake --preset=initiator_debug
 cmake --build --preset initiator_debug
 
-# Compiler le responder (Module B)
 cmake --preset=responder_debug
 cmake --build --preset responder_debug
 ```
 
-## Flash
+Typical output files:
+- `build/initiator_debug/uwb_initiator.hex`
+- `build/responder_debug/uwb_responder.hex`
+
+Flash examples:
 
 ```bash
-# Via nrfjprog (Nordic)
-nrfjprog --program build/initiator_debug/uwb_initiator.hex --chiperase --verify
-nrfjprog --reset
-
-# Ou via J-Link
-JLinkExe -device NRF52840_XXAA -if SWD -speed 4000 -autoconnect 1
-> loadfile build/initiator_debug/uwb_initiator.hex
-> r
-> g
+nrfjprog --snr <INITIATOR_SNR> --program build/initiator_debug/uwb_initiator.hex --sectorerase --verify --reset
+nrfjprog --snr <RESPONDER_SNR> --program build/responder_debug/uwb_responder.hex --sectorerase --verify --reset
 ```
 
-## Output UART (debug)
+## 9) Quick Code Reading Order (for reviewers)
 
-À 115200 baud, format CSV :
+If you need a fast architecture walkthrough:
+1. `src/main.c`
+2. `src/common/ranging.h`
+3. `src/common/uwb_profiles.c`
+4. `src/initiator/main_initiator.c`
+5. `src/responder/main_responder.c`
+6. `src/uart/uart_log.c`
 
-```
-# sample,distance_m,poll_tx,resp_rx,final_tx,poll_rx,resp_tx,final_rx
-1,2.34,0x1A2B3C,0x4D5E6F,0x7A8B9C,0xAB1234,0xCD5678,0xEF9ABC
-2,2.31,...
-```
+This order gives role selection, timing/profile model, SS ranging logic, and output path.
