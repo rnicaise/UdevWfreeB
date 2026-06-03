@@ -1,22 +1,22 @@
 /*
- * main_initiator.c — Module A (Initiator) DS-TWR
+ * main_initiator.c - Module A (Initiator) DS-TWR
  *
- * Envoie un Poll, reçoit un Response, envoie un Final.
- * Le responder calcule la distance (dans ce protocole, c'est le
- * responder qui a tous les timestamps nécessaires).
+ * Sends Poll, receives Response, sends Final.
+ * In this protocol, the responder computes the distance because it has
+ * all required timestamps.
  *
- * Ici on calcule aussi la distance côté initiator en utilisant
- * les timestamps locaux + clock offset ratio pour du monitoring.
+ * This file also computes distance on the initiator side using local
+ * timestamps plus clock offset ratio for monitoring.
  *
- * Séquence :
- *   1. Init DW3000 (SPI, config UWB, antenna delay)
- *   2. Boucle :
- *      a. TX Poll (immédiat)
- *      b. RX Response (auto après délai)
- *      c. TX Final (delayed, contient timestamps t1, t4, t5)
+ * Sequence:
+ *   1. Initialize DW3000 (SPI, UWB config, antenna delay)
+ *   2. Loop:
+ *      a. TX Poll (immediate)
+ *      b. RX Response (auto after delay)
+ *      c. TX Final (delayed, contains timestamps t1, t4, t5)
  *      d. Sleep RNG_DELAY_MS
  *
- * Output UART : CSV avec distance estimée et timestamps
+ * UART output: CSV with estimated distance and timestamps
  */
 
 #include "deca_probe_interface.h"
@@ -54,13 +54,13 @@
 #define RESP_FLAG_SWITCH_PENDING 0x01u
 #define RESP_FLAG_ACQ_PENDING    0x02u
 
-/* ── Trames du protocole ── */
+/* -- Protocol frames -- */
 
-/* Poll : envoyé par l'initiator pour démarrer l'échange
- * Bytes 10-15 : accéléromètre XYZ (3× int16_t LE, en mg) */
+/* Poll: sent by initiator to start the exchange
+ * Bytes 10-15: XYZ accelerometer (3x int16_t LE, in mg) */
 static uint8_t tx_poll_msg[] = {
     0x41, 0x88,           /* Frame Control */
-    0,                    /* Sequence Number (rempli dynamiquement) */
+    0,                    /* Sequence Number (filled dynamically) */
     0xCA, 0xDE,           /* PAN ID */
     'W', 'A',             /* Destination */
     'V', 'E',             /* Source */
@@ -76,7 +76,7 @@ static uint8_t tx_poll_msg[] = {
     0                     /* [21] ranging mode: 0=DS-TWR, 1=SS-TWR */
 };
 
-/* Response attendu du responder */
+/* Response expected from responder */
 static uint8_t rx_resp_msg[] = {
     0x41, 0x88,
     0,
@@ -88,7 +88,7 @@ static uint8_t rx_resp_msg[] = {
     0, 0                  /* padding */
 };
 
-/* Final : envoyé par l'initiator avec les 3 timestamps (t1, t4, t5) */
+/* Final: sent by initiator with 3 timestamps (t1, t4, t5) */
 static uint8_t tx_final_msg[] = {
     0x41, 0x88,
     0,
@@ -101,7 +101,7 @@ static uint8_t tx_final_msg[] = {
     0, 0, 0, 0            /* [18-21] final_tx_ts */
 };
 
-/* ── État ── */
+/* -- State -- */
 static uint8_t frame_seq_nb = 0;
 static uint8_t rx_buffer[RX_BUF_LEN];
 static uint32_t status_reg = 0;
@@ -112,10 +112,10 @@ static uint64_t resp_rx_ts;
 static uint64_t final_tx_ts;
 static float distance;
 
-/* Compteur de mesures */
+/* Measurement counter */
 static uint32_t ranging_count = 0;
 
-/* Accéléromètre */
+/* Accelerometer */
 static accel_data_t accel_data;
 static bool accel_ok = false;
 static uint32_t accel_retry_div = 0;
@@ -144,12 +144,12 @@ static const uwb_runtime_profile_t *active_profile = NULL;
 static char output_buf[224];
 static char cmd_buf[96];
 
-/* ── Config UWB (depuis le SDK) ── */
+/* -- UWB config (from SDK) -- */
 extern dwt_config_t config_options;
 extern dwt_txconfig_t txconfig_options;
 extern dwt_txconfig_t txconfig_options_ch9;
 
-/* ── Fonction UART/debug ── */
+/* -- UART/debug function -- */
 extern void test_run_info(unsigned char *data);
 
 static void handle_app_command(const char *cmd);
@@ -563,7 +563,7 @@ static void handle_app_command(const char *cmd)
 }
 
 /*
- * Point d'entrée du firmware initiator.
+ * Entry point for initiator firmware.
  */
 int ds_twr_initiator_custom(void)
 {
@@ -572,7 +572,7 @@ int ds_twr_initiator_custom(void)
     uart_log_write("UWB RANGING INIT v1.0");
     uart_log_write("ROLE,INITIATOR");
 
-    /* ── 1. Init hardware ── */
+    /* -- 1. Hardware init -- */
     port_set_dw_ic_spi_fastrate();
 
     reset_DWIC();
@@ -592,7 +592,7 @@ int ds_twr_initiator_custom(void)
         while (1) { };
     }
 
-    /* ── 2. Config UWB ── */
+    /* -- 2. UWB config -- */
     active_profile = uwb_profile_find(current_profile_opt);
     if (active_profile != NULL)
     {
@@ -606,7 +606,7 @@ int ds_twr_initiator_custom(void)
     }
     dwt_configciadiag((uint8_t)DW_CIA_DIAG_LOG_OFF);
 
-    /* Config puissance TX selon le canal */
+    /* Configure TX power based on channel */
     if (config_options.chan == 5)
     {
         dwt_configuretxrf(&txconfig_options);
@@ -616,22 +616,22 @@ int ds_twr_initiator_custom(void)
         dwt_configuretxrf(&txconfig_options_ch9);
     }
 
-    /* ── 3. Antenna delay ── */
+    /* -- 3. Antenna delay -- */
     dwt_setrxantennadelay(RX_ANT_DLY);
     dwt_settxantennadelay(TX_ANT_DLY);
 
-    /* ── 4. Timing : délais et timeouts ── */
+    /* -- 4. Timing: delays and timeouts -- */
     dwt_setrxaftertxdelay(active_profile->initiator_poll_tx_to_resp_rx_dly_uus);
     dwt_setrxtimeout(active_profile->initiator_resp_rx_timeout_uus);
     dwt_setpreambledetecttimeout(active_profile->pre_timeout_symbols);
 
-    /* DWM3001CDK : LNA/PA intégrés dans le module, contrôlés par DW3000 GPIO5/6 */
+    /* DWM3001CDK: LNA/PA integrated in module, controlled by DW3000 GPIO5/6 */
     dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
 
-    /* LEDs pour debug visuel */
+    /* LEDs for visual debugging */
     dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
 
-    /* ── Init accéléromètre LIS2DH12 (I2C interne au module DWM3001C) ── */
+    /* -- Initialize LIS2DH12 accelerometer (I2C internal to DWM3001C module) -- */
     accel_ok = accel_init();
     if (accel_ok) {
         test_run_info((unsigned char *)"ACCEL OK (LIS2DH12)");
@@ -639,20 +639,20 @@ int ds_twr_initiator_custom(void)
         test_run_info((unsigned char *)"ACCEL FAIL — check I2C pins");
     }
 
-    /* Header CSV sur UART */
+    /* CSV header on UART */
     test_run_info((unsigned char *)"# sample,distance_m,poll_tx,resp_rx,final_tx");
     uart_log_write("# ms,sample,dist");
 
     NRF_RTC2->PRESCALER = 0;
     NRF_RTC2->TASKS_START = 1;
 
-    /* ── 5. Boucle de ranging ── */
+    /* -- 5. Ranging loop -- */
     while (1)
     {
         process_app_commands();
 
-        /* === Lire accéléromètre (robuste) ===
-         * Si l'init échoue au boot (ou plus tard), on retente périodiquement.
+        /* === Read accelerometer (robust) ===
+         * If init fails at boot (or later), retry periodically.
          */
         uint8_t accel_decimation = test_profile_accel_decimation(active_test_profile);
 
@@ -686,7 +686,7 @@ int ds_twr_initiator_custom(void)
             }
         }
 
-        /* Encoder XYZ dans le Poll (little-endian) */
+        /* Encode XYZ into Poll (little-endian) */
         tx_poll_msg[POLL_MSG_ACCEL_X_IDX]      = (uint8_t)(accel_data.x & 0xFF);
         tx_poll_msg[POLL_MSG_ACCEL_X_IDX + 1]  = (uint8_t)((accel_data.x >> 8) & 0xFF);
         tx_poll_msg[POLL_MSG_ACCEL_Y_IDX]      = (uint8_t)(accel_data.y & 0xFF);
@@ -705,10 +705,10 @@ int ds_twr_initiator_custom(void)
         dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0);
         dwt_writetxfctrl(sizeof(tx_poll_msg) + FCS_LEN, 0, 1); /* ranging bit = 1 */
 
-        /* TX immédiat + active RX auto après délai pour recevoir Response */
+        /* Immediate TX + auto-enable RX after delay to receive Response */
         dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
 
-        /* Attente : bonne réception, timeout, ou erreur */
+        /* Wait for good RX, timeout, or RX error */
         waitforsysstatus(&status_reg, NULL,
             (DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR), 0);
 
@@ -727,7 +727,7 @@ int ds_twr_initiator_custom(void)
                 dwt_readrxdata(rx_buffer, frame_len, 0);
             }
 
-            /* Vérifier que c'est bien un Response */
+            /* Verify this is a Response frame */
             rx_buffer[ALL_MSG_SN_IDX] = 0;
             if (memcmp(rx_buffer, rx_resp_msg, ALL_MSG_COMMON_LEN) == 0)
             {
@@ -784,9 +784,9 @@ int ds_twr_initiator_custom(void)
                     }
                 }
 
-                /* === PRÉPARER TX FINAL === */
+                /* === PREPARE FINAL TX === */
 
-                /* Lire timestamps locaux */
+                /* Read local timestamps */
                 poll_tx_ts = ranging_get_tx_timestamp_u64();
                 resp_rx_ts = ranging_get_rx_timestamp_u64();
 
@@ -832,14 +832,14 @@ int ds_twr_initiator_custom(void)
                 else
                 {
 
-                /* Calculer le moment d'envoi du Final (delayed TX) */
+                /* Compute Final send time (delayed TX) */
                 final_tx_time = (resp_rx_ts + (active_profile->initiator_resp_rx_to_final_tx_dly_uus * UUS_TO_DWT_TIME)) >> 8;
                 dwt_setdelayedtrxtime(final_tx_time);
 
-                /* Le timestamp Final TX = temps programmé + antenna delay */
+                /* Final TX timestamp = scheduled time + antenna delay */
                 final_tx_ts = (((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
 
-                /* Encoder les 3 timestamps dans le message Final */
+                /* Encode 3 timestamps into Final message */
                 ranging_msg_set_ts(&tx_final_msg[FINAL_MSG_POLL_TX_TS_IDX], poll_tx_ts);
                 ranging_msg_set_ts(&tx_final_msg[FINAL_MSG_RESP_RX_TS_IDX], resp_rx_ts);
                 ranging_msg_set_ts(&tx_final_msg[FINAL_MSG_FINAL_TX_TS_IDX], final_tx_ts);
@@ -853,7 +853,7 @@ int ds_twr_initiator_custom(void)
 
                 if (ret == DWT_SUCCESS)
                 {
-                    /* Attendre que le Final soit envoyé */
+                    /* Wait until Final is sent */
                     waitforsysstatus(NULL, NULL, DWT_INT_TXFRS_BIT_MASK, 0);
                     dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
 
@@ -881,7 +881,7 @@ int ds_twr_initiator_custom(void)
                 }
                 else
                 {
-                    /* Delayed TX raté (trop tard) — on skip */
+                    /* Delayed TX failed (too late) - skip cycle */
                 }
                 }
             }

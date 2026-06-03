@@ -1,14 +1,14 @@
 /*
- * ble_adv.c — BLE Advertising via RADIO peripheral (no SoftDevice)
+ * ble_adv.c - BLE advertising via RADIO peripheral (no SoftDevice)
  *
- * Utilise directement le périphérique RADIO du nRF52833 pour envoyer
- * des paquets BLE advertising. Pas besoin de SoftDevice.
+ * Uses the nRF52833 RADIO peripheral directly to send BLE advertising
+ * packets. No SoftDevice required.
  *
- * Le paquet contient :
- *   - Nom local : "UWB"
- *   - Manufacturer Specific Data : distance (cm) + compteur
+ * Packet content:
+ *   - Local name: "UWB"
+ *   - Manufacturer Specific Data: distance (cm) + counter
  *
- * Visible sur n'importe quel scanner BLE (nRF Connect, LightBlue, etc.)
+ * Visible in any BLE scanner (nRF Connect, LightBlue, etc.)
  */
 
 #include "ble_adv.h"

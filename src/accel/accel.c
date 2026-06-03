@@ -1,14 +1,14 @@
 /*
- * accel.c — LIS2DH12 driver via TWIM0 (minimal, blocking, no SDK TWI)
+ * accel.c - LIS2DH12 driver via TWIM0 (minimal, blocking, no SDK TWI)
  *
- * Utilise directement les registres TWIM0 du nRF52833.
- * Pas de dépendance à nrf_twi_sensor / nrf_drv_twi.
+ * Uses nRF52833 TWIM0 registers directly.
+ * No dependency on nrf_twi_sensor / nrf_drv_twi.
  *
- * Pins I2C internes du module DWM3001C :
- *   SDA = P0.16   SCL = P0.13   (vérifiable via WHO_AM_I au boot)
+ * Internal I2C pins on DWM3001C module:
+ *   SDA = P0.16   SCL = P0.13   (validated via WHO_AM_I at boot)
  *
- * NOTE: TWIM0 et SPIM0/SPIS0/TWIS0 partagent le même bloc périphérique
- * (0x40003000). On désactive SPIM0 avant d'activer TWIM0.
+ * NOTE: TWIM0 and SPIM0/SPIS0/TWIS0 share the same peripheral block
+ * (0x40003000). SPIM0 is disabled before enabling TWIM0.
  */
 
 #include "accel.h"

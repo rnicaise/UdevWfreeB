@@ -1,9 +1,9 @@
 /*
- * main.c — Point d'entrée du firmware UWB Ranging
+ * main.c - UWB ranging firmware entry point
  *
- * Remplace le main.c du SDK Qorvo.
- * Initialise le hardware nRF52840, puis lance le firmware
- * initiator ou responder selon la compilation.
+ * Replaces the Qorvo SDK main.c.
+ * Initializes nRF52840 hardware, then starts initiator or responder
+ * firmware depending on compile-time role.
  */
 
 #include <boards.h>
@@ -16,9 +16,9 @@
 #endif
 
 /*
- * Output debug vers UART/RTT.
- * En Debug : printf (redirigé vers RTT par le SDK).
- * En Release : no-op.
+ * Debug output over UART/RTT.
+ * In Debug: printf (redirected to RTT by the SDK).
+ * In Release: no-op.
  */
 void test_run_info(unsigned char *data)
 {
@@ -29,7 +29,7 @@ void test_run_info(unsigned char *data)
 #endif
 }
 
-/* Fonction ranging — définie dans main_initiator.c ou main_responder.c */
+/* Ranging function - defined in main_initiator.c or main_responder.c */
 #if defined(UWB_ROLE_INITIATOR)
 extern int ds_twr_initiator_custom(void);
 #define RANGING_ENTRY ds_twr_initiator_custom
@@ -37,32 +37,32 @@ extern int ds_twr_initiator_custom(void);
 extern int ds_twr_responder_custom(void);
 #define RANGING_ENTRY ds_twr_responder_custom
 #else
-#error "Définir UWB_ROLE_INITIATOR ou UWB_ROLE_RESPONDER"
+#error "Define UWB_ROLE_INITIATOR or UWB_ROLE_RESPONDER"
 #endif
 
 int main(void)
 {
-    /* Init RTT pour printf → SEGGER RTT */
+    /* Initialize RTT for printf -> SEGGER RTT */
     qio_init();
 
-    /* Init BSP : LEDs + boutons */
+    /* Initialize BSP: LEDs + buttons */
     bsp_board_init(BSP_INIT_LEDS | BSP_INIT_BUTTONS);
 
-    /* Init GPIO nRF52840 pour le DW3000 */
+    /* Initialize nRF52840 GPIO for DW3000 */
     gpio_init();
 
-    /* Init SPI vers le DW3000 */
+    /* Initialize SPI to DW3000 */
     nrf52840_dk_spi_init();
 
-    /* Init interruptions DW3000 */
+    /* Initialize DW3000 interrupts */
     dw_irq_init();
 
-    /* Petit délai de stabilisation */
+    /* Short stabilization delay */
     nrf_delay_ms(2);
 
-    /* Lancer le firmware ranging */
+    /* Start ranging firmware */
     RANGING_ENTRY();
 
-    /* Ne devrait jamais arriver (boucle infinie dans le ranging) */
+    /* Should never be reached (ranging loop is infinite) */
     while (1) { }
 }

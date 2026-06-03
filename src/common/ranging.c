@@ -1,5 +1,5 @@
 /*
- * ranging.c — Fonctions utilitaires partagées entre initiator et responder
+ * ranging.c - Shared utility functions for initiator and responder
  */
 
 #include "ranging.h"
@@ -7,8 +7,8 @@
 #include <string.h>
 
 /*
- * Lire un timestamp TX 64-bit depuis le DW3000.
- * Le DW3000 stocke les timestamps sur 40 bits (5 octets).
+ * Read a 64-bit TX timestamp from DW3000.
+ * DW3000 stores timestamps on 40 bits (5 bytes).
  */
 uint64_t ranging_get_tx_timestamp_u64(void)
 {
@@ -25,7 +25,7 @@ uint64_t ranging_get_tx_timestamp_u64(void)
 }
 
 /*
- * Lire un timestamp RX 64-bit depuis le DW3000.
+ * Read a 64-bit RX timestamp from DW3000.
  */
 uint64_t ranging_get_rx_timestamp_u64(void)
 {
@@ -42,8 +42,8 @@ uint64_t ranging_get_rx_timestamp_u64(void)
 }
 
 /*
- * Écrire un timestamp 32-bit dans un buffer de message (little-endian).
- * Utilisé pour encoder les timestamps dans le message Final.
+ * Write a 32-bit timestamp into a message buffer (little-endian).
+ * Used to encode timestamps in the Final message.
  */
 void ranging_msg_set_ts(uint8_t *ts_field, uint64_t ts)
 {
@@ -54,8 +54,8 @@ void ranging_msg_set_ts(uint8_t *ts_field, uint64_t ts)
 }
 
 /*
- * Lire un timestamp 32-bit depuis un buffer de message (little-endian).
- * Utilisé pour décoder les timestamps reçus dans le message Final.
+ * Read a 32-bit timestamp from a message buffer (little-endian).
+ * Used to decode timestamps received in the Final message.
  */
 void ranging_msg_get_ts(const uint8_t *ts_field, uint32_t *ts)
 {
