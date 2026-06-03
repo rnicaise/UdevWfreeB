@@ -12,7 +12,7 @@ object RuntimeStore {
     private const val SPEED_SPIKE_THRESHOLD_MPS = 10f
     private const val JUMP_DISTANCE_THRESHOLD_M = 0.75f
     private const val QUALITY_WINDOW_SAMPLES = 300
-    private const val FREQUENCY_ANOMALY_THRESHOLD_HZ = 100f
+    private const val FREQUENCY_ANOMALY_THRESHOLD_HZ = 250f
     private const val MAX_REASONABLE_SAMPLE_DELTA = 10L
     private const val MAX_SPEED_DT_SEC = 1.0f
 
@@ -276,18 +276,18 @@ object RuntimeStore {
             return null
         }
         return when {
-            value in 40f..80f -> 10f
-            value <= 10f || value >= 120f -> 1f
+            value in 40f..180f -> 10f
+            value <= 10f || value >= 260f -> 1f
             value < 40f -> 1f + ((value - 10f) * 9f / 30f)
-            else -> 10f - ((value - 80f) * 9f / 40f)
+            else -> 10f - ((value - 180f) * 9f / 80f)
         }.coerceIn(1f, 10f)
     }
 
     private fun expectedRoleHz(): Float {
         return when (_state.value.connectedRole) {
-            ConnectedUwbRole.INITIATOR -> 65f
+            ConnectedUwbRole.INITIATOR -> 120f
             ConnectedUwbRole.RESPONDER -> 55f
-            ConnectedUwbRole.UNKNOWN -> 60f
+            ConnectedUwbRole.UNKNOWN -> 120f
         }
     }
 

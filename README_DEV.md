@@ -1,461 +1,469 @@
-# Guide Developpeur Embarque (Debutant C)
+# Developer Guide
 
-Ce document explique le firmware embarque de ce projet de zero, pour une personne qui code mais ne connait pas encore bien le C ni l'embarque.
+## Current Runtime Status
 
-Objectif:
-- comprendre l'architecture globale
-- comprendre le role de chaque fichier embarque
-- comprendre le protocole UWB DS-TWR
-- savoir compiler, flasher, verifier et depanner
-- savoir modifier le code sans casser le systeme
+This repository currently runs a practical SS-TWR workflow, not the older DS-TWR teaching flow.
 
----
+Current ground truth:
+- active ranging mode: SS-TWR only
+- distance is computed on the initiator
+- the phone must be connected to the initiator over USB serial
+- the other board runs the responder firmware
+- active test profiles: `FAST_DISTANCE_ONLY` and `TURBO_DISTANCE_ONLY`
+- firmware and Android serial baud rate: `460800`
+- primary runtime CSV emitted by the initiator: `ms,sample,dist`
 
-## 1) Vue d'ensemble en 60 secondes
-
-Ce projet fait du ranging UWB entre deux cartes:
-- initiator: declenche la mesure
-- responder: recoit, repond, calcule la distance
-
-Le protocole utilise est DS-TWR (Double-Sided Two-Way Ranging) avec 3 messages:
-- POLL (initiator -> responder)
-- RESPONSE (responder -> initiator)
-- FINAL (initiator -> responder)
-
-Le responder calcule la distance et l'envoie en CSV sur UART:
-- format: ms,sample,dist,iax,iay,iaz,rax,ray,raz
-- destination: app Android OTG (USB serie)
+If you see older notes describing DS-TWR as the main runtime path, treat them as legacy background only.
 
 ---
 
-## 2) Structure reelle du firmware
+## 1. System Overview
 
-Dossier principal du firmware:
-- src/main.c
-- src/common/ranging.h
-- src/common/ranging.c
-- src/initiator/main_initiator.c
-- src/responder/main_responder.c
-- src/accel/accel.h
-- src/accel/accel.c
-- src/uart/uart_log.h
-- src/uart/uart_log.c
-- src/platform/deca_spi_dwm3001cdk.c
-- src/platform/port_dwm3001cdk.c
-- src/board/custom_board.h
-- CMakeLists.txt
-- CMakePresets.json
+The project has two embedded roles:
+- initiator: starts each ranging exchange, computes distance, sends CSV to Android
+- responder: receives the poll and sends the delayed SS response
 
-Le SDK Qorvo est vendorise dans vendor/sdk.
-Tu utilises donc le code SDK sans le modifier directement.
+High-level data flow:
+
+```text
+Android phone <-> USB serial <-> Initiator <-> UWB SS-TWR <-> Responder
+```
+
+The current live measurement loop is:
+1. Initiator sends a POLL frame.
+2. Responder schedules and sends a delayed RESPONSE frame.
+3. Initiator reads responder timestamps from the RESPONSE.
+4. Initiator computes ToF and distance.
+5. Initiator writes one CSV line to UART for the Android app.
 
 ---
 
-## 3) Mini base C pour lire ce projet
+## 2. Project Layout
 
-Si tu viens d'un langage haut niveau, retiens surtout ces points:
+Main firmware files:
+- `src/main.c`
+- `src/common/ranging.h`
+- `src/common/uwb_profiles.c`
+- `src/initiator/main_initiator.c`
+- `src/responder/main_responder.c`
+- `src/uart/uart_log.c`
+- `src/board/custom_board.h`
+- `src/platform/deca_spi_dwm3001cdk.c`
+- `src/platform/port_dwm3001cdk.c`
 
-1. Le point d'entree est main()
-- ici: src/main.c
-- ce fichier initialise la carte puis appelle le role (initiator ou responder)
+Main Android files:
+- `android-receiver-app/app/src/main/java/com/qorvo/uwbreceiver/service/UwbForegroundService.kt`
+- `android-receiver-app/app/src/main/java/com/qorvo/uwbreceiver/data/CsvParser.kt`
+- `android-receiver-app/app/src/main/java/com/qorvo/uwbreceiver/data/UwbModels.kt`
+- `android-receiver-app/app/src/main/java/com/qorvo/uwbreceiver/ui/UwbMainScreen.kt`
 
-2. Les .h sont des contrats, les .c sont l'implementation
-- .h: declarations (types, prototypes, constantes)
-- .c: code executable
-
-3. Les macros #define sont des constantes compile-time
-- exemple: RNG_DELAY_MS, TX_ANT_DLY
-- elles controlent timing et comportement
-
-4. Les pointeurs existent partout
-- un tableau de bytes uint8_t[] est souvent manipule via pointeur
-- les messages UWB sont des buffers d'octets
-
-5. Beaucoup de code embarque est en boucle infinie
-- while (1) est normal
-- on fait un cycle de mesure en continu
-
-6. Registre materiel = champ memoire mappe
-- exemple: NRF_UARTE0->TASKS_STARTTX = 1
-- tu pilotes le peripherique en ecrivant/lisant des registres
+The Qorvo SDK is vendored in `vendor/sdk`.
 
 ---
 
-## 4) Build system: qui compile quoi
+## 3. Firmware Entry Point
 
-### 4.1 CMakePresets
+The build selects a role at compile time, then `main()` jumps into the role-specific ranging loop.
 
-Le fichier CMakePresets.json propose 4 builds:
-- initiator_debug
-- initiator_release
-- responder_debug
-- responder_release
+Key excerpt from `src/main.c`:
 
-La variable cle est UWB_ROLE:
-- initiator ou responder
+```c
+#if defined(UWB_ROLE_INITIATOR)
+extern int ds_twr_initiator_custom(void);
+#define RANGING_ENTRY ds_twr_initiator_custom
+#elif defined(UWB_ROLE_RESPONDER)
+extern int ds_twr_responder_custom(void);
+#define RANGING_ENTRY ds_twr_responder_custom
+#endif
 
-### 4.2 CMakeLists principal
+int main(void)
+{
+   qio_init();
+   bsp_board_init(BSP_INIT_LEDS | BSP_INIT_BUTTONS);
+   gpio_init();
+   nrf52840_dk_spi_init();
+   dw_irq_init();
+   nrf_delay_ms(2);
+   RANGING_ENTRY();
 
-CMakeLists.txt fait 3 choses majeures:
+   while (1) { }
+}
+```
 
-1. branche le SDK vendorise
-- QORVO_SDK_PATH = vendor/sdk
-- toolchain ARM fournie par le SDK
-
-2. construit les libs SDK necessaires
-- driver UWB
-- libs platform (rtt, qio, qosal, chelpers)
-- startup nRF52833
-
-3. ajoute ton code projet selon le role
-- initiator: src/initiator/main_initiator.c + accel
-- responder: src/responder/main_responder.c + accel + uart
-
-Important:
-- main.c est toujours compile
-- UWB_ROLE choisit la fonction de ranging appelee
-
----
-
-## 5) Boot sequence exacte
-
-### 5.1 src/main.c
-
-Au demarrage:
-1. qio_init() pour RTT/printf debug
-2. bsp_board_init() pour LEDs/boutons
-3. gpio_init() pour GPIOTE
-4. nrf52840_dk_spi_init() pour interface DW3000
-5. dw_irq_init() pour interruptions DW3000
-6. nrf_delay_ms(2)
-7. appel du role:
-   - ds_twr_initiator_custom() si build initiator
-   - ds_twr_responder_custom() si build responder
-
-Le choix est compile-time via:
-- UWB_ROLE_INITIATOR
-- UWB_ROLE_RESPONDER
+Why it matters:
+- `initiator_debug` and `responder_debug` are separate builds
+- the runtime role is not selected dynamically
+- the ranging loop owns the lifetime of the firmware
 
 ---
 
-## 6) Protocole radio DS-TWR de ce projet
+## 4. Active Runtime Profiles
 
-### 6.1 Les 6 timestamps
+The current runtime accepts only two hot-switchable test profiles.
 
-Notation:
-- t1: poll_tx (initiator envoie POLL)
-- t2: poll_rx (responder recoit POLL)
-- t3: resp_tx (responder envoie RESPONSE)
-- t4: resp_rx (initiator recoit RESPONSE)
-- t5: final_tx (initiator envoie FINAL)
-- t6: final_rx (responder recoit FINAL)
+Key excerpt from `src/initiator/main_initiator.c`:
 
-Le responder connait:
-- localement: t2, t3, t6
-- via FINAL: t1, t4, t5
+```c
+static bool is_supported_test_profile(uint8_t profile)
+{
+   return (profile == UWB_TEST_PROFILE_FAST_DISTANCE_ONLY) ||
+         (profile == UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY);
+}
 
-### 6.2 Formule
+static const char *test_profile_name(uint8_t profile)
+{
+   switch (profile)
+   {
+      case UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY:
+         return "TURBO_DISTANCE_ONLY";
+      case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
+         return "FAST_DISTANCE_ONLY";
+      default:
+         return "UNKNOWN";
+   }
+}
+```
 
-Ra = t4 - t1
-Rb = t6 - t3
-Da = t5 - t4
-Db = t3 - t2
+The same restriction exists in the responder.
 
-ToF = (Ra*Rb - Da*Db) / (Ra + Rb + Da + Db)
-distance = ToF * SPEED_OF_LIGHT
+Profile constants from `src/common/ranging.h`:
 
-Le code applique cette formule dans src/responder/main_responder.c.
+```c
+#define UWB_TEST_PROFILE_FAST_DISTANCE_ONLY  0u
+#define UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY 5u
+#define UWB_TEST_PROFILE_DEFAULT UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY
+```
 
-### 6.3 Trames et offsets
-
-Constantes dans src/common/ranging.h:
-- FUNC_CODE_POLL = 0x21
-- FUNC_CODE_RESPONSE = 0x10
-- FUNC_CODE_FINAL = 0x23
-- offsets accel dans POLL: 10/12/14
-- offsets timestamps dans FINAL: 10/14/18
-
-Ce sont juste des index de byte dans des tableaux uint8_t[].
-
----
-
-## 7) Initiator: detail ligne de vie
-
-Fichier: src/initiator/main_initiator.c
-
-### 7.1 Initialisation
-
-L'init fait:
-1. reset/probe/init DW3000
-2. dwt_configure() avec config SDK
-3. configuration TX RF selon canal
-4. antenna delays (TX_ANT_DLY / RX_ANT_DLY)
-5. timeouts et delais RX/TX
-6. LNA/PA + LEDs debug
-7. init accelerometre LIS2DH12
-
-### 7.2 Boucle de mesure
-
-Cycle principal:
-1. lire accelerometre (ou tenter recovery si KO)
-2. encoder accel X/Y/Z dans tx_poll_msg
-3. envoyer POLL
-4. attendre RESPONSE
-5. si RESPONSE valide:
-   - lire poll_tx_ts (t1) et resp_rx_ts (t4)
-   - programmer FINAL en delayed TX
-   - calculer final_tx_ts (t5)
-   - encoder t1/t4/t5 dans FINAL
-   - envoyer FINAL
-6. sleep RNG_DELAY_MS
-
-Notes importantes:
-- pas de gros logs par echantillon dans hot path
-- si delayed TX rate: cycle skip, pas de blocage
+Why it matters:
+- old accel-heavy and diagnostics-oriented profiles are not part of the intended current workflow
+- the Android app also exposes only these two profiles in the main UI
 
 ---
 
-## 8) Responder: detail ligne de vie
+## 5. Current SS-TWR Timing Constants
 
-Fichier: src/responder/main_responder.c
+Important timing values live in `src/common/ranging.h`.
 
-### 8.1 Initialisation
+```c
+#define POLL_TX_TO_RESP_RX_DLY_UUS  (300 + CPU_PROCESSING_TIME)
+#define SS_POLL_RX_TO_RESP_TX_DLY_UUS 900
+#define RESP_RX_TIMEOUT_UUS 300
+#define RNG_DELAY_MS 1
+```
 
-L'init fait:
-1. reset/probe/init DW3000
-2. configuration UWB
-3. antenna delays
-4. LNA/PA + LEDs
-5. init accelerometre local
-6. init UART (uart_log_init)
-7. start RTC2 pour timestamp ms local
-8. emission header CSV
+What these control:
+- how long the initiator waits before opening RX after the poll
+- how long the responder waits before sending the delayed response
+- how aggressive the receive timeout is
+- the minimum loop delay between measurements
 
-### 8.2 Boucle de mesure
-
-Cycle principal:
-1. activer RX pour attendre POLL
-2. si POLL valide:
-   - extraire accel initiator du POLL
-   - sauvegarder t2 (poll_rx_ts)
-   - programmer TX RESPONSE en delayed
-   - activer attente du FINAL
-3. si FINAL valide:
-   - lire t3 et t6 localement
-   - decoder t1, t4, t5 depuis FINAL
-   - calculer distance DS-TWR
-   - lire accel local
-   - formatter CSV
-   - envoyer via UART
-
-Comportement erreur:
-- timeout RX ou erreur radio: clear status et on repart
-- delayed TX impossible: skip cycle
+`SS_POLL_RX_TO_RESP_TX_DLY_UUS = 900` is part of the stabilized current setup.
 
 ---
 
-## 9) Accelerometre LIS2DH12
+## 6. Initiator: Distance Computation and CSV Output
 
-Fichiers:
-- src/accel/accel.h
-- src/accel/accel.c
+The initiator is the board that computes distance and publishes it to Android.
 
-Points cle:
-- communication I2C via TWIM0 en acces registre direct
-- test WHO_AM_I = 0x33
-- essai adresses 0x19 puis 0x18
-- config capteur en 100 Hz, mode HR, +/-2g
-- lecture burst 6 bytes (X/Y/Z)
-- conversion en mg (shift >>4)
+### 6.1 Minimal CSV writer
 
-Pourquoi c'est robuste:
-- timeouts TWI pour eviter blocage
-- retry init accelerometre cote initiator si capteur indisponible
+Key excerpt from `src/initiator/main_initiator.c`:
 
----
+```c
+static void write_distance_csv(uint32_t ms, uint32_t sample, float distance_m)
+{
+   char *dst = output_buf;
+   float distance_cm_f = distance_m * 100.0f;
+   int32_t distance_cm = (int32_t)(distance_cm_f + ((distance_cm_f >= 0.0f) ? 0.5f : -0.5f));
 
-## 10) UART: pourquoi ce module existe
+   dst = append_u32(dst, ms);
+   *dst++ = ',';
+   dst = append_u32(dst, sample);
+   *dst++ = ',';
+   dst = append_distance_cm(dst, distance_cm);
+   *dst = '\0';
 
-Fichiers:
-- src/uart/uart_log.h
-- src/uart/uart_log.c
+   uart_log_write(output_buf);
+}
+```
 
-Role:
-- sortir les lignes CSV vers Android via USB serial
+Why this is important:
+- the hot path uses a lightweight integer formatter
+- the main CSV contract is intentionally minimal
+- reducing per-sample overhead helps high-rate ranging stability
 
-Choix techniques importants:
-- UARTE0 a 115200 bauds
-- envoi par chunks
-- timeout de TX pour ne jamais bloquer la boucle de ranging
-- copie en buffer RAM avant TX (EasyDMA lit en RAM)
+### 6.2 SS-TWR distance formula actually used
 
-Cette partie est critique pour la stabilite du runtime.
+Key excerpt from `src/initiator/main_initiator.c`:
 
----
+```c
+ranging_msg_get_ts(&rx_buffer[RESP_MSG_SS_POLL_RX_TS_IDX], &responder_poll_rx_ts);
+ranging_msg_get_ts(&rx_buffer[RESP_MSG_SS_RESP_TX_TS_IDX], &responder_resp_tx_ts);
 
-## 11) Couche platform (adaptation DWM3001CDK)
+rtd_init = resp_rx_ts_32 - poll_tx_ts_32;
+reply_resp = responder_resp_tx_ts - responder_poll_rx_ts;
+clock_offset_ratio = (float)dwt_readclockoffset() * (float)CLOCK_OFFSET_PPM_TO_RATIO;
+tof_dtu = ((float)rtd_init - ((float)reply_resp * (1.0f - clock_offset_ratio))) / 2.0f;
 
-Fichiers:
-- src/platform/deca_spi_dwm3001cdk.c
-- src/platform/port_dwm3001cdk.c
-- src/board/custom_board.h
+distance = tof_dtu * (float)DWT_TIME_UNITS * (float)SPEED_OF_LIGHT;
+ranging_count++;
 
-Ce code adapte le SDK a la carte cible:
-- mapping GPIO reels (SPI, IRQ, RESET, UART)
-- implementation SPI unique (pas de 2e DW3000)
-- gestion IRQ DW3000
-- reset/wakeup
+ms = (uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u);
+write_distance_csv(ms, ranging_count, distance);
+```
 
-Si un jour la carte change, c'est ce bloc qu'il faut revisiter en premier.
-
----
-
-## 12) Donnees serie: contrat avec Android
-
-Header:
-- # ms,sample,dist,iax,iay,iaz,rax,ray,raz
-
-Colonnes:
-- ms: temps local responder (RTC2)
-- sample: compteur de mesures
-- dist: distance en metres
-- iax/iay/iaz: accel initiator (mg)
-- rax/ray/raz: accel responder (mg)
-
-Exemple:
-- 1203,57,2.34,-12,1018,23,-5,1002,19
-
-Si tu modifies l'ordre des colonnes, il faut aussi ajuster le parseur Android.
+Why this is important:
+- this is the real SS-TWR computation path in the active build
+- clock-offset correction is part of the stabilized solution
+- the timestamp source for `ms` is local RTC2 on the initiator
 
 ---
 
-## 13) Commandes utiles (build, flash, verification)
+## 7. Responder: Delayed SS Response Path
 
-### 13.1 Build
+The responder does not publish the main distance CSV in the current workflow. Its critical job is to answer the initiator with the timestamps needed for SS-TWR.
+
+Key excerpt from `src/responder/main_responder.c`:
+
+```c
+poll_rx_ts = ranging_get_rx_timestamp_u64();
+
+response_delay_uus = active_profile->responder_ss_poll_rx_to_resp_tx_dly_uus;
+resp_tx_time = (poll_rx_ts + (response_delay_uus * UUS_TO_DWT_TIME)) >> 8;
+dwt_setdelayedtrxtime(resp_tx_time);
+resp_tx_ts = (((uint64_t)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
+
+tx_resp_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
+tx_resp_msg[RESP_MSG_CTRL_TEST_PROFILE_IDX] = current_test_profile;
+ranging_msg_set_ts(&tx_resp_msg[RESP_MSG_SS_POLL_RX_TS_IDX], poll_rx_ts);
+ranging_msg_set_ts(&tx_resp_msg[RESP_MSG_SS_RESP_TX_TS_IDX], resp_tx_ts);
+dwt_writetxdata(sizeof(tx_resp_msg), tx_resp_msg, 0);
+dwt_writetxfctrl(sizeof(tx_resp_msg) + FCS_LEN, 0, 1);
+
+ret = dwt_starttx(DWT_START_TX_DELAYED);
+```
+
+Why this is important:
+- the responder schedules a delayed transmit based on the received poll time
+- it embeds `poll_rx_ts` and `resp_tx_ts` into the response frame
+- these timestamps are what the initiator needs to compute distance
+
+---
+
+## 8. UART Contract
+
+The current serial link is shared between firmware and Android at `460800` baud.
+
+Key excerpt from `src/uart/uart_log.c`:
+
+```c
+NRF_UARTE0->CONFIG = 0;
+NRF_UARTE0->BAUDRATE = UARTE_BAUDRATE_BAUDRATE_Baud460800;
+
+NRF_UARTE0->ENABLE = UARTE_ENABLE_ENABLE_Enabled;
+```
+
+The matching Android constant lives in `UwbForegroundService.kt`:
+
+```kotlin
+private const val SERIAL_BAUD_RATE = 460800
+```
+
+Why it matters:
+- if firmware and Android disagree here, the link is unusable
+- `460800` is the stable current operating point
+
+---
+
+## 9. Android Side: Role Enforcement and Sample Filtering
+
+The Android app is aware of the SS-only workflow and prevents applying settings to the wrong board.
+
+Key excerpt from `android-receiver-app/.../UwbForegroundService.kt`:
+
+```kotlin
+if (connectedRole == ConnectedUwbRole.RESPONDER) {
+   RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "SS-TWR only: connect USB to initiator")
+   return
+}
+```
+
+The app also rejects implausible distance jumps.
+
+```kotlin
+private fun isPlausibleSample(sample: CsvSample): Boolean {
+   if (!sample.dist.isFinite() || sample.dist < -5f || sample.dist > 30f) {
+      return false
+   }
+
+   val previous = lastAcceptedSample ?: return true
+   val sampleDelta = sample.sample - previous.sample
+   if (sampleDelta <= 0L) {
+      return false
+   }
+
+   val distanceDelta = kotlin.math.abs(sample.dist - previous.dist)
+   return !(sampleDelta <= 3L && distanceDelta > 5f)
+}
+```
+
+Why it matters:
+- this protects the UI against obvious serial glitches or unstable bursts
+- the app behavior was tuned for the current higher-rate SS runtime
+
+---
+
+## 10. Android CSV Parsing
+
+The parser accepts the minimal current CSV format while remaining compatible with richer legacy lines.
+
+Key excerpt from `android-receiver-app/.../CsvParser.kt`:
+
+```kotlin
+val parts = trimmed.split(',')
+if (parts.size < 3) {
+   return null
+}
+
+CsvSample(
+   ms = parts[0].toLong(),
+   sample = parts[1].toLong(),
+   dist = parts[2].toFloat(),
+   ...
+)
+```
+
+Current primary contract:
+
+```text
+ms,sample,dist
+1203,57,2.34
+```
+
+Why it matters:
+- the current initiator path only needs three columns
+- the parser still tolerates extended formats with radio metrics and legacy telemetry
+
+---
+
+## 11. Build Commands
+
+From the repository root:
 
 Initiator debug:
-- cmake --preset=initiator_debug
-- cmake --build --preset initiator_debug
+
+```bash
+cmake --preset=initiator_debug
+cmake --build --preset initiator_debug
+```
 
 Responder debug:
-- cmake --preset=responder_debug
-- cmake --build --preset responder_debug
 
-### 13.2 Flash (exemple nrfjprog)
+```bash
+cmake --preset=responder_debug
+cmake --build --preset responder_debug
+```
+
+Android app debug APK:
+
+```bash
+cd android-receiver-app
+./gradlew assembleDebug
+```
+
+---
+
+## 12. Flash Commands
+
+Examples with `nrfjprog`:
 
 Initiator:
-- nrfjprog --program build/initiator_debug/uwb_initiator.hex --chiperase --verify
-- nrfjprog --reset
+
+```bash
+nrfjprog --snr 760221448 --program build/initiator_debug/uwb_initiator.hex --sectorerase --verify --reset
+```
 
 Responder:
-- nrfjprog --program build/responder_debug/uwb_responder.hex --chiperase --verify
-- nrfjprog --reset
 
-Avec deux sondes, ajoute --snr <serial> pour cibler la bonne carte.
+```bash
+nrfjprog --snr 760220908 --program build/responder_debug/uwb_responder.hex --sectorerase --verify --reset
+```
 
-### 13.3 Verification rapide
+Custom board through J-Link EDU Mini:
 
-1. la LED init clignote au boot
-2. la sortie UART du responder contient le header CSV
-3. les lignes CSV defilent en continu
-4. dist varie quand on bouge les cartes
+```bash
+nrfjprog --snr 802009545 --family NRF52 --program build/responder_debug/uwb_responder.hex --sectorerase --verify --reset
+```
 
----
-
-## 14) Guide debug pour debutant
-
-### 14.1 Aucun output UART
-
-Checklist:
-1. verifier que le responder est bien flashe
-2. verifier cable USB/port modem
-3. verifier uart_log_init appele
-4. verifier que la boucle recoit des POLL
-
-### 14.2 Distance figee ou absurde
-
-Checklist:
-1. verifier antennes et orientation
-2. verifier antenna delays TX_ANT_DLY/RX_ANT_DLY
-3. verifier timeouts trop agressifs
-4. verifier que POLL/FINAL sont bien valides
-
-### 14.3 Ranging qui saute
-
-Checklist:
-1. pas de printf lourds dans hot path
-2. UART non bloquante (timeouts actifs)
-3. pas de traitement lent dans boucle
-4. verifier alimentation stable des cartes
+Notes:
+- recurring `SeggerBackend` `-256` lines can still appear during successful operations
+- the final success criteria are program, verify, and reset completion
+- the J-Link EDU Mini needs valid target power and VTref; it does not power the board for you
 
 ---
 
-## 15) Comment modifier le code sans te perdre
+## 13. Quick Validation Checklist
 
-Methode conseillee:
+After flashing both boards:
+1. Connect the phone to the initiator, not the responder.
+2. Launch the Android app.
+3. Confirm the app detects the role and allows settings application.
+4. Confirm live CSV is flowing.
+5. Move the boards and verify distance updates.
+6. Switch between `FAST_DISTANCE_ONLY` and `TURBO_DISTANCE_ONLY`.
 
-1. modifier une seule chose a la fois
-2. rebuild role concerne
-3. reflasher
-4. verifier CSV sur 1 a 2 minutes
-5. commit petit et clair
-
-Points sensibles:
-- timings dans src/common/ranging.h
-- sequence TX/RX dans initiator/responder
-- code UART dans src/uart/uart_log.c
-- adaptation pins dans src/board/custom_board.h
-
----
-
-## 16) Lexique rapide
-
-- UWB: Ultra Wideband
-- DS-TWR: Double-Sided Two-Way Ranging
-- ToF: Time of Flight
-- DW3000: puce radio UWB Qorvo
-- nRF52833: microcontroleur ARM
-- ISR: Interrupt Service Routine
-- SPI: bus serie pour parler au DW3000
-- I2C/TWIM: bus serie pour le capteur accel
-- UART/UARTE: sortie serie vers PC/Android
+If something is wrong:
+- no serial data: check baud, cable, OTG, and which board is connected
+- no ranging: check that initiator and responder builds were not swapped
+- unstable distance: recheck power, antenna setup, and any timing changes
 
 ---
 
-## 17) Carte mentale finale
+## 14. Throughput Tuning History (>70 Hz)
 
-En une phrase:
+This table summarizes what has already been tuned in this repository and what has not been lowered yet.
 
-Le firmware initiator envoie des trames UWB synchronisees, le responder complete la sequence DS-TWR pour calculer la distance, ajoute les donnees accel des deux cotes, puis publie le resultat en CSV via UART pour l'application Android.
+| Lever | Current value | Tried already | Observed effect | Stability risk |
+| --- | --- | --- | --- | --- |
+| `RNG_DELAY_MS` | `1` | Yes | Major frequency gain versus older higher delays | Medium if other parts are also aggressive |
+| Initiator hot-path logs/formatting | minimal CSV (`ms,sample,dist`) | Yes | Better sustained rate | Low |
+| UART end-to-end baud | `460800` | Yes (higher baud also tested in project history) | Good compromise for stability | Medium at very high baud |
+| Android plausibility filtering | enabled | Yes | Fewer visible spikes/glitches | Low |
+| `POLL_TX_TO_RESP_RX_DLY_UUS` | `300 + CPU_PROCESSING_TIME` | No documented reduction in git history | Unknown | High |
+| `SS_POLL_RX_TO_RESP_TX_DLY_UUS` | `900` | No documented reduction in git history | Unknown | High |
+| `RESP_RX_TIMEOUT_UUS` | `300` | No documented reduction in git history | Unknown | Medium to High |
 
-Si tu maitrises ce flux bout en bout, tu maitrises deja l'essentiel du projet embarque.
+Interpretation:
+- the project already used software-path optimizations to push frequency up
+- the three radio timing constants above have not been reduced in a documented commit history yet
+- those three are the most sensitive levers for the next frequency step and also the easiest way to re-introduce instability
 
 ---
 
-## 18) Explorateur CSV local (Mac)
+## 15. What Is Still Legacy
 
-Tu as maintenant un outil interactif pour explorer les CSV exportes:
+Some source files still contain DS-TWR branches, extra telemetry paths, or historical profile definitions.
 
-- Script: [tools/csv_explorer_app.py](tools/csv_explorer_app.py)
-- Dependances: [tools/requirements-csv-explorer.txt](tools/requirements-csv-explorer.txt)
+That does not mean they are the preferred runtime path.
 
-### Installation
+For current development, prioritize these truths:
+- SS-TWR drives the live measurement workflow
+- initiator computes distance
+- responder mainly provides delayed timestamped responses
+- Android is meant to be attached to the initiator
+- `460800` is the current stable serial configuration
 
-Depuis la racine du repo:
+---
 
-- pip install -r tools/requirements-csv-explorer.txt
+## 16. Recommended Files to Read First
 
-### Lancement
+If you want to understand the current system quickly, read in this order:
+1. `src/main.c`
+2. `src/common/ranging.h`
+3. `src/initiator/main_initiator.c`
+4. `src/responder/main_responder.c`
+5. `src/uart/uart_log.c`
+6. `android-receiver-app/app/src/main/java/com/qorvo/uwbreceiver/service/UwbForegroundService.kt`
+7. `android-receiver-app/app/src/main/java/com/qorvo/uwbreceiver/data/CsvParser.kt`
 
-- streamlit run tools/csv_explorer_app.py
-
-### Fonctions
-
-- timeline distance (raw + filtree si disponible)
-- stats (moyenne, ecart-type, duree)
-- superposition distance sur:
-   - accel initiator
-   - accel responder
-   - gyro telephone
-- trace GPS coloree par distance
-- downsample et rolling mean pour lisser/accelerer l'affichage
+That path gives you the current boot flow, timing configuration, SS response path, distance computation, UART output, and Android ingestion logic.

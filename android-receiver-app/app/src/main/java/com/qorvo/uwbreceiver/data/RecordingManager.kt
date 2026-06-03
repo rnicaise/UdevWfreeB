@@ -198,9 +198,6 @@ class RecordingManager(private val context: Context) {
         return when {
             controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 1 && controls.testProfile == TestProfile.TURBO_DISTANCE_ONLY -> "turbo_experimental"
             controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 1 && controls.testProfile == TestProfile.FAST_DISTANCE_ONLY -> "max_speed_safe"
-            controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 5 -> "20ms_stable"
-            controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 3 -> "max_speed"
-            controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 30 && controls.medianWindow == 7 -> "outdoor_robust"
             else -> "custom"
         }
     }

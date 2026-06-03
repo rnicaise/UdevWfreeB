@@ -41,6 +41,9 @@ void ranging_msg_get_ts(const uint8_t *ts_field, uint32_t *ts);
 /* Délai entre RX Poll → TX Response (responder répond) */
 #define POLL_RX_TO_RESP_TX_DLY_UUS 900
 
+/* Délai SS-TWR : doit rester après l'ouverture RX initiator. */
+#define SS_POLL_RX_TO_RESP_TX_DLY_UUS 900
+
 /* Délai entre fin TX Response → activation RX (responder attend Final) */
 #define RESP_TX_TO_FINAL_RX_DLY_UUS 500
 
@@ -63,7 +66,7 @@ void ranging_msg_get_ts(const uint8_t *ts_field, uint32_t *ts);
 #define UWB_TEST_PROFILE_ROBUST_DETECTION    3u
 #define UWB_TEST_PROFILE_DIAGNOSTICS_FULL    4u
 #define UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY 5u
-#define UWB_TEST_PROFILE_DEFAULT UWB_TEST_PROFILE_STABLE_FULL
+#define UWB_TEST_PROFILE_DEFAULT UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY
 
 /* ── Format des trames IEEE 802.15.4 ──
  *

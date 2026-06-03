@@ -32,15 +32,16 @@ class SettingsStore(private val context: Context) {
     }
 
     val controls: Flow<UwbControlSettings> = context.dataStore.data.map { pref ->
-        val modeRaw = pref[keyRangingMode] ?: 0
-        val testProfileRaw = pref[keyTestProfile] ?: TestProfile.STABLE_FULL.ordinal
+        val testProfileRaw = pref[keyTestProfile] ?: TestProfile.TURBO_DISTANCE_ONLY.ordinal
+        val testProfileSupported = testProfileRaw in TestProfile.entries.indices
+        val testProfile = TestProfile.entries.getOrElse(testProfileRaw) { TestProfile.TURBO_DISTANCE_ONLY }
         UwbControlSettings(
-            medianWindow = (pref[keyMedianWindow] ?: 5).coerceIn(1, 31),
+            medianWindow = if (testProfileSupported) (pref[keyMedianWindow] ?: 1).coerceIn(1, 31) else 1,
             uwbDataRateKbps = 6800,
             rfChannel = sanitizeRfChannel(pref[keyRfChannel] ?: 5),
-            acquisitionPeriodMs = (pref[keyAcquisitionPeriodMs] ?: 20).coerceIn(1, 200),
-            rangingMode = if (modeRaw == 1) RangingMode.SS_TWR else RangingMode.DS_TWR,
-            testProfile = TestProfile.entries.getOrElse(testProfileRaw) { TestProfile.STABLE_FULL },
+            acquisitionPeriodMs = if (testProfileSupported) (pref[keyAcquisitionPeriodMs] ?: 1).coerceIn(1, 200) else 1,
+            rangingMode = RangingMode.SS_TWR,
+            testProfile = testProfile,
         )
     }
 
@@ -89,7 +90,7 @@ class SettingsStore(private val context: Context) {
 
     suspend fun updateRangingMode(value: RangingMode) {
         context.dataStore.edit { pref ->
-            pref[keyRangingMode] = if (value == RangingMode.SS_TWR) 1 else 0
+            pref[keyRangingMode] = RangingMode.SS_TWR.ordinal
         }
     }
 

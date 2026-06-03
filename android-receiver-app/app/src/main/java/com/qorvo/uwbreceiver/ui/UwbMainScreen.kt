@@ -27,7 +27,6 @@ import androidx.compose.ui.unit.sp
 import com.qorvo.uwbreceiver.data.ConnectedUwbRole
 import com.qorvo.uwbreceiver.data.CsvSample
 import com.qorvo.uwbreceiver.data.LinkState
-import com.qorvo.uwbreceiver.data.RangingMode
 import com.qorvo.uwbreceiver.data.SignalQualityCalculator
 import com.qorvo.uwbreceiver.data.TestProfile
 import com.qorvo.uwbreceiver.data.UwbControlSettings
@@ -54,13 +53,10 @@ fun UwbMainScreen(
     onUwbDataRateChange: (Int) -> Unit,
     onRfChannelChange: (Int) -> Unit,
     onAcquisitionPeriodChange: (Int) -> Unit,
-    onRangingModeChange: (RangingMode) -> Unit,
     onBikeBoxPositionChange: (Int) -> Unit,
     onVestBoxPositionChange: (Int) -> Unit,
     onTestProfileChange: (TestProfile) -> Unit,
-    onPreset20msStable: () -> Unit,
     onPresetMaxSpeed: () -> Unit,
-    onPresetOutdoorRobust: () -> Unit,
     onApplyUwbSettings: () -> Unit,
 ) {
     val sample = state.runtime.latest
@@ -74,10 +70,10 @@ fun UwbMainScreen(
         else -> RedAlert
     }
     val signal = SignalQualityCalculator.fromSample(sample)
-    val effectiveMode = effectiveModeLabel(state.runtime.connectedRole)
+    val selectedMode = "SS_TWR"
     val roleSubtitle = when (state.runtime.connectedRole) {
-        ConnectedUwbRole.INITIATOR -> "Initiator detecte · mode auto SS-TWR rapide (~65 Hz)"
-        ConnectedUwbRole.RESPONDER -> "Responder detecte · mode auto DS-TWR stable (~55-60 Hz)"
+        ConnectedUwbRole.INITIATOR -> "Initiator detecte · SS-TWR actif"
+        ConnectedUwbRole.RESPONDER -> "Responder detecte · SS-TWR responder"
         ConnectedUwbRole.UNKNOWN -> "Connecte un boitier; l'app detecte automatiquement son role"
     }
 
@@ -169,7 +165,7 @@ fun UwbMainScreen(
                 StatRow("Connection", state.runtime.linkState.name)
                 StatRow("Status", state.runtime.status)
                 StatRow("Connected role", state.runtime.connectedRole.name)
-                StatRow("Auto mode", effectiveMode)
+                StatRow("Requested mode", selectedMode)
                 StatRow("Real Hz", String.format("%.1f", state.runtime.hz))
                 StatRow("Resp acq ms", sample?.responderAcquisitionPeriodMs?.toString() ?: "--")
                 StatRow("Init acq ms", sample?.initiatorAcquisitionPeriodMs?.toString() ?: "--")
@@ -304,14 +300,6 @@ fun UwbMainScreen(
                 Text("Preset actif: $presetName", color = TextSecondary)
                 Text("Test profile: ${testProfileLabel(state.controls.testProfile)}", color = TextSecondary)
 
-                Button(
-                    onClick = { onTestProfileChange(TestProfile.TURBO_DISTANCE_ONLY) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = state.runtime.linkState == LinkState.CONNECTED,
-                ) {
-                    Text("Turbo exp")
-                }
-
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = { onTestProfileChange(TestProfile.FAST_DISTANCE_ONLY) },
@@ -321,78 +309,22 @@ fun UwbMainScreen(
                         Text("Fast dist")
                     }
                     Button(
-                        onClick = { onTestProfileChange(TestProfile.FAST_ACCEL_DECIMATED) },
+                        onClick = { onTestProfileChange(TestProfile.TURBO_DISTANCE_ONLY) },
                         modifier = Modifier.weight(1f),
                         enabled = state.runtime.linkState == LinkState.CONNECTED,
                     ) {
-                        Text("Fast accel/4")
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { onTestProfileChange(TestProfile.STABLE_FULL) },
-                        modifier = Modifier.weight(1f),
-                        enabled = state.runtime.linkState == LinkState.CONNECTED,
-                    ) {
-                        Text("Stable full")
-                    }
-                    Button(
-                        onClick = { onTestProfileChange(TestProfile.ROBUST_DETECTION) },
-                        modifier = Modifier.weight(1f),
-                        enabled = state.runtime.linkState == LinkState.CONNECTED,
-                    ) {
-                        Text("Robust")
-                    }
-                }
-                Button(
-                    onClick = { onTestProfileChange(TestProfile.DIAGNOSTICS_FULL) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = state.runtime.linkState == LinkState.CONNECTED,
-                ) {
-                    Text("Diagnostics full")
-                }
-
-                Text("Ranging mode auto: $effectiveMode", color = TextSecondary)
-                Text("Responder -> DS-TWR. Initiator -> SS-TWR.", color = TextSecondary)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = { onRangingModeChange(RangingMode.DS_TWR) },
-                        modifier = Modifier.weight(1f),
-                        enabled = false,
-                    ) {
-                        Text("DS on responder")
-                    }
-                    Button(
-                        onClick = { onRangingModeChange(RangingMode.SS_TWR) },
-                        modifier = Modifier.weight(1f),
-                        enabled = false,
-                    ) {
-                        Text("SS on initiator")
+                        Text("Turbo max")
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = onPreset20msStable,
-                        modifier = Modifier.weight(1f),
-                        enabled = state.runtime.linkState == LinkState.CONNECTED,
-                    ) {
-                        Text("20ms stable")
-                    }
-                    Button(
-                        onClick = onPresetMaxSpeed,
-                        modifier = Modifier.weight(1f),
-                        enabled = state.runtime.linkState == LinkState.CONNECTED,
-                    ) {
-                        Text("Max speed")
-                    }
-                }
+                Text("Ranging mode: $selectedMode", color = TextSecondary)
+
                 Button(
-                    onClick = onPresetOutdoorRobust,
+                    onClick = onPresetMaxSpeed,
                     modifier = Modifier.fillMaxWidth(),
                     enabled = state.runtime.linkState == LinkState.CONNECTED,
                 ) {
-                    Text("Outdoor robust")
+                    Text("Max speed")
                 }
 
                 Text("Median window: ${state.controls.medianWindow}", color = TextSecondary)
@@ -567,29 +499,14 @@ private fun presetLabel(controls: UwbControlSettings): String {
     return when {
         controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 1 && controls.testProfile == TestProfile.TURBO_DISTANCE_ONLY -> "Turbo experimental"
         controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 1 && controls.testProfile == TestProfile.FAST_DISTANCE_ONLY -> "Max speed safe"
-        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 20 && controls.medianWindow == 5 -> "20ms stable"
-        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 1 && controls.medianWindow == 3 -> "Max speed"
-        controls.uwbDataRateKbps == 6800 && controls.acquisitionPeriodMs == 30 && controls.medianWindow == 7 -> "Outdoor robust"
         else -> "Custom"
     }
 }
 
 private fun testProfileLabel(profile: TestProfile): String {
     return when (profile) {
-        TestProfile.TURBO_DISTANCE_ONLY -> "Turbo distance only"
+        TestProfile.TURBO_DISTANCE_ONLY -> "Turbo max"
         TestProfile.FAST_DISTANCE_ONLY -> "Fast distance only"
-        TestProfile.FAST_ACCEL_DECIMATED -> "Fast + accel decimated"
-        TestProfile.STABLE_FULL -> "Stable full telemetry"
-        TestProfile.ROBUST_DETECTION -> "Robust detection"
-        TestProfile.DIAGNOSTICS_FULL -> "Diagnostics full"
-    }
-}
-
-private fun effectiveModeLabel(role: ConnectedUwbRole): String {
-    return when (role) {
-        ConnectedUwbRole.INITIATOR -> "SS_TWR"
-        ConnectedUwbRole.RESPONDER -> "DS_TWR"
-        ConnectedUwbRole.UNKNOWN -> "Detecting"
     }
 }
 

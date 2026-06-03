@@ -142,25 +142,14 @@ static bool is_supported_acq_period(uint8_t period_ms)
 
 static bool is_supported_test_profile(uint8_t profile)
 {
-    return profile <= UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY;
+    return (profile == UWB_TEST_PROFILE_FAST_DISTANCE_ONLY) ||
+           (profile == UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY);
 }
 
 static uint8_t test_profile_accel_decimation(uint8_t profile)
 {
-    switch (profile)
-    {
-        case UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY:
-        case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
-            return 0u;
-        case UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED:
-            return 4u;
-        case UWB_TEST_PROFILE_ROBUST_DETECTION:
-            return 2u;
-        case UWB_TEST_PROFILE_STABLE_FULL:
-        case UWB_TEST_PROFILE_DIAGNOSTICS_FULL:
-        default:
-            return 1u;
-    }
+    (void)profile;
+    return 0u;
 }
 
 static const char *test_profile_name(uint8_t profile)
@@ -171,14 +160,6 @@ static const char *test_profile_name(uint8_t profile)
             return "TURBO_DISTANCE_ONLY";
         case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
             return "FAST_DISTANCE_ONLY";
-        case UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED:
-            return "FAST_ACCEL_DECIMATED";
-        case UWB_TEST_PROFILE_STABLE_FULL:
-            return "STABLE_FULL";
-        case UWB_TEST_PROFILE_ROBUST_DETECTION:
-            return "ROBUST_DETECTION";
-        case UWB_TEST_PROFILE_DIAGNOSTICS_FULL:
-            return "DIAGNOSTICS_FULL";
         default:
             return "UNKNOWN";
     }
@@ -199,7 +180,7 @@ static int apply_profile_option(uint8_t opt)
     {
         return DWT_ERROR;
     }
-    radio_quality_enable_diagnostics();
+    dwt_configciadiag((uint8_t)DW_CIA_DIAG_LOG_OFF);
 
     if (config_options.chan == 5)
     {
@@ -361,27 +342,6 @@ static bool parse_test_profile_command(const char *cmd, uint8_t *profile)
         *profile = UWB_TEST_PROFILE_FAST_DISTANCE_ONLY;
         return true;
     }
-    if (strcmp(name, "FAST_ACCEL_DECIMATED") == 0)
-    {
-        *profile = UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED;
-        return true;
-    }
-    if (strcmp(name, "STABLE_FULL") == 0)
-    {
-        *profile = UWB_TEST_PROFILE_STABLE_FULL;
-        return true;
-    }
-    if (strcmp(name, "ROBUST_DETECTION") == 0)
-    {
-        *profile = UWB_TEST_PROFILE_ROBUST_DETECTION;
-        return true;
-    }
-    if (strcmp(name, "DIAGNOSTICS_FULL") == 0)
-    {
-        *profile = UWB_TEST_PROFILE_DIAGNOSTICS_FULL;
-        return true;
-    }
-
     return false;
 }
 
@@ -534,13 +494,8 @@ static void handle_app_command(const char *cmd)
 
     if (parse_ranging_mode_command(cmd, &requested_mode))
     {
-        if (requested_mode == RANGING_MODE_DS_TWR)
-        {
-            uart_log_write("ACK,RANGING_MODE_APPLIED,mode=DS_TWR");
-            return;
-        }
-
-        uart_log_write("ERR,RANGING_MODE_UNSUPPORTED,mode=SS_TWR");
+        (void)requested_mode;
+        uart_log_write("ACK,RANGING_MODE_APPLIED,mode=SS_TWR");
         return;
     }
 
@@ -584,7 +539,7 @@ int ds_twr_responder_custom(void)
         test_run_info((unsigned char *)"CONFIG FAILED");
         while (1) { };
     }
-    radio_quality_enable_diagnostics();
+    dwt_configciadiag((uint8_t)DW_CIA_DIAG_LOG_OFF);
 
     if (config_options.chan == 5)
     {
@@ -644,8 +599,8 @@ int ds_twr_responder_custom(void)
             if (memcmp(rx_buffer, rx_poll_msg, ALL_MSG_COMMON_LEN) == 0)
             {
                 uint32_t resp_tx_time;
+                uint16_t response_delay_uus;
                 int ret;
-                ranging_mode_t requested_ranging_mode = RANGING_MODE_DS_TWR;
 
                 accel_rx[0] = (int16_t)(rx_buffer[POLL_MSG_ACCEL_X_IDX] |
                               (rx_buffer[POLL_MSG_ACCEL_X_IDX + 1] << 8));
@@ -666,24 +621,16 @@ int ds_twr_responder_custom(void)
                 {
                     last_initiator_test_profile = rx_buffer[POLL_MSG_TEST_PROFILE_IDX];
                 }
-                if ((frame_len > POLL_MSG_RANGING_MODE_IDX) && (rx_buffer[POLL_MSG_RANGING_MODE_IDX] == (uint8_t)RANGING_MODE_SS_TWR))
+                if (is_supported_acq_period(last_initiator_acq_period_ms))
                 {
-                    requested_ranging_mode = RANGING_MODE_SS_TWR;
+                    current_acq_period_ms = last_initiator_acq_period_ms;
                 }
-
-                if (requested_ranging_mode == RANGING_MODE_SS_TWR)
+                if (is_supported_test_profile(last_initiator_test_profile))
                 {
-                    if (is_supported_acq_period(last_initiator_acq_period_ms))
-                    {
-                        current_acq_period_ms = last_initiator_acq_period_ms;
-                    }
-                    if (is_supported_test_profile(last_initiator_test_profile))
-                    {
-                        current_test_profile = last_initiator_test_profile;
-                    }
-                    period_pending = false;
-                    period_after_final = false;
+                    current_test_profile = last_initiator_test_profile;
                 }
+                period_pending = false;
+                period_after_final = false;
 
                 if (frame_len > POLL_MSG_SWITCH_TOKEN_IDX)
                 {
@@ -717,7 +664,8 @@ int ds_twr_responder_custom(void)
 
                 poll_rx_ts = ranging_get_rx_timestamp_u64();
 
-                resp_tx_time = (poll_rx_ts + (active_profile->responder_poll_rx_to_resp_tx_dly_uus * UUS_TO_DWT_TIME)) >> 8;
+                response_delay_uus = active_profile->responder_ss_poll_rx_to_resp_tx_dly_uus;
+                resp_tx_time = (poll_rx_ts + (response_delay_uus * UUS_TO_DWT_TIME)) >> 8;
                 dwt_setdelayedtrxtime(resp_tx_time);
                 resp_tx_ts = (((uint64_t)(resp_tx_time & 0xFFFFFFFEUL)) << 8) + TX_ANT_DLY;
 
@@ -738,31 +686,28 @@ int ds_twr_responder_custom(void)
                 dwt_writetxdata(sizeof(tx_resp_msg), tx_resp_msg, 0);
                 dwt_writetxfctrl(sizeof(tx_resp_msg) + FCS_LEN, 0, 1);
 
-                ret = dwt_starttx(DWT_START_TX_DELAYED | ((requested_ranging_mode == RANGING_MODE_SS_TWR) ? 0 : DWT_RESPONSE_EXPECTED));
+                ret = dwt_starttx(DWT_START_TX_DELAYED);
 
                 if (ret == DWT_ERROR)
                 {
                     continue;
                 }
 
-                if (requested_ranging_mode == RANGING_MODE_SS_TWR)
-                {
-                    waitforsysstatus(NULL, NULL, DWT_INT_TXFRS_BIT_MASK, 0);
-                    dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
-                    frame_seq_nb++;
+                waitforsysstatus(NULL, NULL, DWT_INT_TXFRS_BIT_MASK, 0);
+                dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK);
+                frame_seq_nb++;
 
-                    if (switch_after_final)
+                if (switch_after_final)
+                {
+                    if (apply_profile_option(pending_profile_opt) == DWT_SUCCESS)
                     {
-                        if (apply_profile_option(pending_profile_opt) == DWT_SUCCESS)
-                        {
-                            current_profile_opt = pending_profile_opt;
-                            switch_pending = false;
-                            switch_after_final = false;
-                            uart_log_write("ACK,UWB_CHANNEL_SWITCHED");
-                        }
+                        current_profile_opt = pending_profile_opt;
+                        switch_pending = false;
+                        switch_after_final = false;
+                        uart_log_write("ACK,UWB_CHANNEL_SWITCHED");
                     }
-                    continue;
                 }
+                continue;
 
                 waitforsysstatus(&status_reg, NULL,
                     (DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR), 0);

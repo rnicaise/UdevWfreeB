@@ -93,12 +93,12 @@ data class DistanceThresholds(
 )
 
 data class UwbControlSettings(
-    val medianWindow: Int = 5,
+    val medianWindow: Int = 1,
     val uwbDataRateKbps: Int = 6800,
     val rfChannel: Int = 5,
-    val acquisitionPeriodMs: Int = 20,
-    val rangingMode: RangingMode = RangingMode.DS_TWR,
-    val testProfile: TestProfile = TestProfile.STABLE_FULL,
+    val acquisitionPeriodMs: Int = 1,
+    val rangingMode: RangingMode = RangingMode.SS_TWR,
+    val testProfile: TestProfile = TestProfile.TURBO_DISTANCE_ONLY,
 )
 
 data class ExperimentSettings(
@@ -107,16 +107,11 @@ data class ExperimentSettings(
 )
 
 enum class RangingMode {
-    DS_TWR,
     SS_TWR,
 }
 
 enum class TestProfile {
     FAST_DISTANCE_ONLY,
-    FAST_ACCEL_DECIMATED,
-    STABLE_FULL,
-    ROBUST_DETECTION,
-    DIAGNOSTICS_FULL,
     TURBO_DISTANCE_ONLY,
 }
 

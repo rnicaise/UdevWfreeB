@@ -34,7 +34,6 @@
 #include "../common/uwb_profiles.h"
 #include "../accel/accel.h"
 #include "../uart/uart_log.h"
-#include "../common/radio_quality.h"
 
 #define POLL_MSG_PROFILE_IDX      16
 #define POLL_MSG_SWITCH_TOKEN_IDX 17
@@ -131,7 +130,7 @@ typedef enum
     RANGING_MODE_SS_TWR = 1,
 } ranging_mode_t;
 
-static ranging_mode_t active_ranging_mode = RANGING_MODE_DS_TWR;
+static ranging_mode_t active_ranging_mode = RANGING_MODE_SS_TWR;
 
 static uint8_t current_profile_opt = UWB_PROFILE_OPT_6M8_STABLE;
 static uint8_t pending_profile_opt = UWB_PROFILE_OPT_6M8_STABLE;
@@ -167,25 +166,14 @@ static bool is_supported_acq_period(uint8_t period_ms)
 
 static bool is_supported_test_profile(uint8_t profile)
 {
-    return profile <= UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY;
+    return (profile == UWB_TEST_PROFILE_FAST_DISTANCE_ONLY) ||
+           (profile == UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY);
 }
 
 static uint8_t test_profile_accel_decimation(uint8_t profile)
 {
-    switch (profile)
-    {
-        case UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY:
-        case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
-            return 0u;
-        case UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED:
-            return 4u;
-        case UWB_TEST_PROFILE_ROBUST_DETECTION:
-            return 2u;
-        case UWB_TEST_PROFILE_STABLE_FULL:
-        case UWB_TEST_PROFILE_DIAGNOSTICS_FULL:
-        default:
-            return 1u;
-    }
+    (void)profile;
+    return 0u;
 }
 
 static const char *test_profile_name(uint8_t profile)
@@ -196,17 +184,68 @@ static const char *test_profile_name(uint8_t profile)
             return "TURBO_DISTANCE_ONLY";
         case UWB_TEST_PROFILE_FAST_DISTANCE_ONLY:
             return "FAST_DISTANCE_ONLY";
-        case UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED:
-            return "FAST_ACCEL_DECIMATED";
-        case UWB_TEST_PROFILE_STABLE_FULL:
-            return "STABLE_FULL";
-        case UWB_TEST_PROFILE_ROBUST_DETECTION:
-            return "ROBUST_DETECTION";
-        case UWB_TEST_PROFILE_DIAGNOSTICS_FULL:
-            return "DIAGNOSTICS_FULL";
         default:
             return "UNKNOWN";
     }
+}
+
+static char *append_u32(char *dst, uint32_t value)
+{
+    char digits[10];
+    uint8_t count = 0;
+
+    do
+    {
+        digits[count++] = (char)('0' + (value % 10u));
+        value /= 10u;
+    } while (value != 0u);
+
+    while (count > 0u)
+    {
+        *dst++ = digits[--count];
+    }
+
+    return dst;
+}
+
+static char *append_distance_cm(char *dst, int32_t distance_cm)
+{
+    uint32_t magnitude;
+    uint32_t frac;
+
+    if (distance_cm < 0)
+    {
+        *dst++ = '-';
+        magnitude = (uint32_t)(-distance_cm);
+    }
+    else
+    {
+        magnitude = (uint32_t)distance_cm;
+    }
+
+    dst = append_u32(dst, magnitude / 100u);
+    *dst++ = '.';
+    frac = magnitude % 100u;
+    *dst++ = (char)('0' + (frac / 10u));
+    *dst++ = (char)('0' + (frac % 10u));
+
+    return dst;
+}
+
+static void write_distance_csv(uint32_t ms, uint32_t sample, float distance_m)
+{
+    char *dst = output_buf;
+    float distance_cm_f = distance_m * 100.0f;
+    int32_t distance_cm = (int32_t)(distance_cm_f + ((distance_cm_f >= 0.0f) ? 0.5f : -0.5f));
+
+    dst = append_u32(dst, ms);
+    *dst++ = ',';
+    dst = append_u32(dst, sample);
+    *dst++ = ',';
+    dst = append_distance_cm(dst, distance_cm);
+    *dst = '\0';
+
+    uart_log_write(output_buf);
 }
 
 static int apply_profile_option(uint8_t opt)
@@ -224,7 +263,7 @@ static int apply_profile_option(uint8_t opt)
     {
         return DWT_ERROR;
     }
-    radio_quality_enable_diagnostics();
+    dwt_configciadiag((uint8_t)DW_CIA_DIAG_LOG_OFF);
 
     if (config_options.chan == 5)
     {
@@ -388,27 +427,6 @@ static bool parse_test_profile_command(const char *cmd, uint8_t *profile)
         *profile = UWB_TEST_PROFILE_FAST_DISTANCE_ONLY;
         return true;
     }
-    if (strcmp(name, "FAST_ACCEL_DECIMATED") == 0)
-    {
-        *profile = UWB_TEST_PROFILE_FAST_ACCEL_DECIMATED;
-        return true;
-    }
-    if (strcmp(name, "STABLE_FULL") == 0)
-    {
-        *profile = UWB_TEST_PROFILE_STABLE_FULL;
-        return true;
-    }
-    if (strcmp(name, "ROBUST_DETECTION") == 0)
-    {
-        *profile = UWB_TEST_PROFILE_ROBUST_DETECTION;
-        return true;
-    }
-    if (strcmp(name, "DIAGNOSTICS_FULL") == 0)
-    {
-        *profile = UWB_TEST_PROFILE_DIAGNOSTICS_FULL;
-        return true;
-    }
-
     return false;
 }
 
@@ -535,15 +553,9 @@ static void handle_app_command(const char *cmd)
 
     if (parse_ranging_mode_command(cmd, &requested_mode))
     {
-        active_ranging_mode = requested_mode;
-        if (active_ranging_mode == RANGING_MODE_SS_TWR)
-        {
-            uart_log_write("ACK,RANGING_MODE_APPLIED,mode=SS_TWR");
-        }
-        else
-        {
-            uart_log_write("ACK,RANGING_MODE_APPLIED,mode=DS_TWR");
-        }
+        (void)requested_mode;
+        active_ranging_mode = RANGING_MODE_SS_TWR;
+        uart_log_write("ACK,RANGING_MODE_APPLIED,mode=SS_TWR");
         return;
     }
 
@@ -592,7 +604,7 @@ int ds_twr_initiator_custom(void)
         test_run_info((unsigned char *)"CONFIG FAILED");
         while (1) { };
     }
-    radio_quality_enable_diagnostics();
+    dwt_configciadiag((uint8_t)DW_CIA_DIAG_LOG_OFF);
 
     /* Config puissance TX selon le canal */
     if (config_options.chan == 5)
@@ -788,7 +800,6 @@ int ds_twr_initiator_custom(void)
                         uint32_t resp_rx_ts_32 = (uint32_t)resp_rx_ts;
                         uint32_t rtd_init;
                         uint32_t reply_resp;
-                        radio_quality_t radio_quality;
                         float clock_offset_ratio;
                         float tof_dtu;
                         uint32_t ms;
@@ -798,28 +809,14 @@ int ds_twr_initiator_custom(void)
 
                         rtd_init = resp_rx_ts_32 - poll_tx_ts_32;
                         reply_resp = responder_resp_tx_ts - responder_poll_rx_ts;
-                        radio_quality_read(&radio_quality);
-                        clock_offset_ratio = radio_quality.clock_offset_ppm / 1000000.0f;
+                        clock_offset_ratio = (float)dwt_readclockoffset() * (float)CLOCK_OFFSET_PPM_TO_RATIO;
                         tof_dtu = ((float)rtd_init - ((float)reply_resp * (1.0f - clock_offset_ratio))) / 2.0f;
 
                         distance = tof_dtu * (float)DWT_TIME_UNITS * (float)SPEED_OF_LIGHT;
                         ranging_count++;
 
                         ms = (uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u);
-                        snprintf(output_buf, sizeof(output_buf),
-                                 "%lu,%lu,%.2f,%.1f,%.1f,%.2f,%u,%u,%.2f,%u,%d",
-                                 (unsigned long)ms,
-                                 (unsigned long)ranging_count,
-                                 (double)distance,
-                                 (double)radio_quality.rx_power_dbm,
-                                 (double)radio_quality.fp_power_dbm,
-                                 (double)radio_quality.clock_offset_ppm,
-                                 (unsigned int)radio_quality.score_10,
-                                 (unsigned int)radio_quality.nlos_score_10,
-                                 (double)radio_quality.peak_to_fp_samples,
-                                 (unsigned int)radio_quality.fp_conf_level,
-                                 (int)radio_quality.sts_quality);
-                        uart_log_write(output_buf);
+                        write_distance_csv(ms, ranging_count, distance);
 
                         if (switch_request_armed && (pending_switch_token != 0u) && (tx_poll_msg[POLL_MSG_SWITCH_TOKEN_IDX] == pending_switch_token))
                         {
@@ -894,6 +891,9 @@ int ds_twr_initiator_custom(void)
             dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
         }
 
-        Sleep(acquisition_period_ms);
+        if (active_test_profile != UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY)
+        {
+            Sleep(acquisition_period_ms);
+        }
     }
 }

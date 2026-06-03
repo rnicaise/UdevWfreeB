@@ -27,6 +27,7 @@ typedef struct
     uint16_t initiator_resp_rx_to_final_tx_dly_uus;
 
     uint16_t responder_poll_rx_to_resp_tx_dly_uus;
+    uint16_t responder_ss_poll_rx_to_resp_tx_dly_uus;
     uint16_t responder_resp_tx_to_final_rx_dly_uus;
     uint16_t responder_final_rx_timeout_uus;
 

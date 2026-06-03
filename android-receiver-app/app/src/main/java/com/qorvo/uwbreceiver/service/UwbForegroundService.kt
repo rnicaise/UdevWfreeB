@@ -33,6 +33,7 @@ import com.qorvo.uwbreceiver.MainActivity
 import com.qorvo.uwbreceiver.R
 import com.qorvo.uwbreceiver.data.ConnectedUwbRole
 import com.qorvo.uwbreceiver.data.CsvParser
+import com.qorvo.uwbreceiver.data.CsvSample
 import com.qorvo.uwbreceiver.data.ExperimentSettings
 import com.qorvo.uwbreceiver.data.LinkState
 import com.qorvo.uwbreceiver.data.PhoneTelemetry
@@ -78,16 +79,17 @@ class UwbForegroundService : Service() {
     private var alertJob: Job? = null
     private var distanceAlertActive = false
 
-    private var medianWindow = 5
+    private var medianWindow = 1
     private var requestedUwbDataRateKbps = 6800
     private var requestedRfChannel = 5
-    private var requestedAcquisitionPeriodMs = 20
+    private var requestedAcquisitionPeriodMs = 1
     private var requestedRangingMode = RangingMode.SS_TWR
-    private var requestedTestProfile = TestProfile.STABLE_FULL
+    private var requestedTestProfile = TestProfile.TURBO_DISTANCE_ONLY
     private var currentExperiment = ExperimentSettings()
     private var lastAppliedUwbDataRateKbps: Int? = null
     private var connectedRole = ConnectedUwbRole.UNKNOWN
     private val distWindow = ArrayDeque<Float>()
+    private var lastAcceptedSample: CsvSample? = null
 
     @Volatile
     private var latestGyroX: Float? = null
@@ -306,7 +308,7 @@ class UwbForegroundService : Service() {
     private fun startReadLoop(port: UsbSerialPort) {
         readJob?.cancel()
         readJob = serviceScope.launch {
-            val buffer = ByteArray(1024)
+            val buffer = ByteArray(4096)
             val accumulator = StringBuilder()
 
             while (isActive && shouldConnect && activePort === port) {
@@ -325,6 +327,11 @@ class UwbForegroundService : Service() {
 
                 val chunk = String(buffer, 0, len)
                 accumulator.append(chunk)
+                if (accumulator.length > MAX_ACCUMULATED_SERIAL_CHARS) {
+                    accumulator.clear()
+                    RuntimeStore.onInvalidLine()
+                    continue
+                }
 
                 var newlineIndex = accumulator.indexOf("\n")
                 while (newlineIndex >= 0) {
@@ -371,6 +378,13 @@ class UwbForegroundService : Service() {
             return
         }
 
+        if (!isPlausibleSample(sample)) {
+            RuntimeStore.onInvalidLine()
+            return
+        }
+
+        lastAcceptedSample = sample
+
         val filtered = filterDistance(sample.dist)
         updateDistanceAlert(filtered)
         val phoneTelemetry = snapshotPhoneTelemetry()
@@ -411,6 +425,21 @@ class UwbForegroundService : Service() {
         } else {
             (sorted[mid - 1] + sorted[mid]) / 2f
         }
+    }
+
+    private fun isPlausibleSample(sample: CsvSample): Boolean {
+        if (!sample.dist.isFinite() || sample.dist < -5f || sample.dist > 30f) {
+            return false
+        }
+
+        val previous = lastAcceptedSample ?: return true
+        val sampleDelta = sample.sample - previous.sample
+        if (sampleDelta <= 0L) {
+            return false
+        }
+
+        val distanceDelta = kotlin.math.abs(sample.dist - previous.dist)
+        return !(sampleDelta <= 3L && distanceDelta > 5f)
     }
 
     private fun snapshotPhoneTelemetry(): PhoneTelemetry {
@@ -461,12 +490,16 @@ class UwbForegroundService : Service() {
         val rate = requestedUwbDataRateKbps
         val channel = requestedRfChannel
         val period = requestedAcquisitionPeriodMs
-        val mode = effectiveRangingModeForRole(connectedRole)
         val profile = requestedTestProfile
 
-        if (mode == null) {
+        if (connectedRole == ConnectedUwbRole.UNKNOWN) {
             RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "Detecting UWB role before applying")
             requestConnectedRole()
+            return
+        }
+
+        if (connectedRole == ConnectedUwbRole.RESPONDER) {
+            RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "SS-TWR only: connect USB to initiator")
             return
         }
 
@@ -474,7 +507,7 @@ class UwbForegroundService : Service() {
         applySettingsJob = serviceScope.launch {
             RuntimeStore.setLinkState(
                 RuntimeStore.state.value.linkState,
-                "Auto UWB: ${connectedRole.name} -> ${mode.name}, ${profile.name}, ch$channel, $rate kbps, $period ms"
+                "SS-TWR: ${profile.name}, ch$channel, $rate kbps, $period ms"
             )
 
             val sentProfile = sendCommandSlowly("CFG,TEST_PROFILE=${profile.name}\n")
@@ -484,10 +517,8 @@ class UwbForegroundService : Service() {
             val sentChannel = sendCommandSlowly("CFG,UWB_CHANNEL=$channel\n")
             delay(COMMAND_GAP_MS)
             val sentPeriod = sendCommandSlowly("CFG,ACQ_PERIOD_MS=$period\n")
-            delay(COMMAND_GAP_MS)
-            val sentMode = sendCommandSlowly("CFG,RANGING_MODE=${mode.name}\n")
 
-            if (sentProfile && sentRate && sentChannel && sentPeriod && sentMode) {
+            if (sentProfile && sentRate && sentChannel && sentPeriod) {
                 lastAppliedUwbDataRateKbps = rate
             } else {
                 RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "UWB cmd pending (connect first)")
@@ -498,14 +529,6 @@ class UwbForegroundService : Service() {
     private fun requestConnectedRole() {
         serviceScope.launch {
             sendCommandSlowly("CFG,GET_ROLE\n")
-        }
-    }
-
-    private fun effectiveRangingModeForRole(role: ConnectedUwbRole): RangingMode? {
-        return when (role) {
-            ConnectedUwbRole.INITIATOR -> RangingMode.SS_TWR
-            ConnectedUwbRole.RESPONDER -> RangingMode.DS_TWR
-            ConnectedUwbRole.UNKNOWN -> null
         }
     }
 
@@ -704,6 +727,7 @@ class UwbForegroundService : Service() {
         private const val ALERT_BEEP_DURATION_MS = 250
         private const val ALERT_BEEP_PERIOD_MS = 300
         private const val SERIAL_BAUD_RATE = 460800
+        private const val MAX_ACCUMULATED_SERIAL_CHARS = 8192
         private const val COMMAND_BYTE_DELAY_MS = 15L
         private const val COMMAND_GAP_MS = 120L
 

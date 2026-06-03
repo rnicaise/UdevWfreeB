@@ -144,22 +144,6 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
                     settingsStore.updateMedianWindow(1)
                     settingsStore.updateAcquisitionPeriodMs(1)
                 }
-                TestProfile.FAST_ACCEL_DECIMATED -> {
-                    settingsStore.updateMedianWindow(3)
-                    settingsStore.updateAcquisitionPeriodMs(1)
-                }
-                TestProfile.STABLE_FULL -> {
-                    settingsStore.updateMedianWindow(5)
-                    settingsStore.updateAcquisitionPeriodMs(20)
-                }
-                TestProfile.ROBUST_DETECTION -> {
-                    settingsStore.updateMedianWindow(7)
-                    settingsStore.updateAcquisitionPeriodMs(30)
-                }
-                TestProfile.DIAGNOSTICS_FULL -> {
-                    settingsStore.updateMedianWindow(1)
-                    settingsStore.updateAcquisitionPeriodMs(50)
-                }
             }
             delay(200)
             sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
@@ -170,34 +154,12 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
         sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
     }
 
-    fun applyPreset20msStable() {
-        viewModelScope.launch {
-            settingsStore.updateTestProfile(TestProfile.STABLE_FULL)
-            settingsStore.updateMedianWindow(5)
-            settingsStore.updateUwbDataRateKbps(6800)
-            settingsStore.updateAcquisitionPeriodMs(20)
-            delay(200)
-            sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
-        }
-    }
-
     fun applyPresetMaxSpeed() {
         viewModelScope.launch {
-            settingsStore.updateTestProfile(TestProfile.FAST_DISTANCE_ONLY)
+            settingsStore.updateTestProfile(TestProfile.TURBO_DISTANCE_ONLY)
             settingsStore.updateMedianWindow(1)
             settingsStore.updateUwbDataRateKbps(6800)
             settingsStore.updateAcquisitionPeriodMs(1)
-            delay(200)
-            sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
-        }
-    }
-
-    fun applyPresetOutdoorRobust() {
-        viewModelScope.launch {
-            settingsStore.updateTestProfile(TestProfile.ROBUST_DETECTION)
-            settingsStore.updateMedianWindow(7)
-            settingsStore.updateUwbDataRateKbps(6800)
-            settingsStore.updateAcquisitionPeriodMs(30)
             delay(200)
             sendServiceAction(UwbForegroundService.ACTION_APPLY_UWB_SETTINGS)
         }

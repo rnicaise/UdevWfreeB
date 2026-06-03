@@ -54,13 +54,10 @@ class MainActivity : ComponentActivity() {
                     onUwbDataRateChange = viewModel::updateUwbDataRateKbps,
                     onRfChannelChange = viewModel::applyRfChannel,
                     onAcquisitionPeriodChange = viewModel::updateAcquisitionPeriodMs,
-                    onRangingModeChange = viewModel::updateRangingMode,
                     onBikeBoxPositionChange = viewModel::updateBikeBoxPosition,
                     onVestBoxPositionChange = viewModel::updateVestBoxPosition,
                     onTestProfileChange = viewModel::applyTestProfile,
-                    onPreset20msStable = viewModel::applyPreset20msStable,
                     onPresetMaxSpeed = viewModel::applyPresetMaxSpeed,
-                    onPresetOutdoorRobust = viewModel::applyPresetOutdoorRobust,
                     onApplyUwbSettings = viewModel::applyUwbSettings,
                 )
 
