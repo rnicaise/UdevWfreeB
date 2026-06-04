@@ -144,18 +144,27 @@ set(PLATFORM_SOURCES
     ${PLATFORM_PATH}/sdk/integration/nrfx/legacy/nrf_drv_spi.c
     ${PLATFORM_PATH}/sdk/modules/nrfx/drivers/src/nrfx_clock.c
     ${PLATFORM_PATH}/sdk/modules/nrfx/drivers/src/nrfx_gpiote.c
+    ${PLATFORM_PATH}/sdk/modules/nrfx/drivers/src/nrfx_power.c
     ${PLATFORM_PATH}/sdk/modules/nrfx/drivers/src/prs/nrfx_prs.c
     ${PLATFORM_PATH}/sdk/modules/nrfx/drivers/src/nrfx_spi.c
     ${PLATFORM_PATH}/sdk/modules/nrfx/drivers/src/nrfx_spim.c
+    ${PLATFORM_PATH}/sdk/integration/nrfx/legacy/nrf_drv_power.c
     ${PLATFORM_PATH}/sdk/components/libraries/util/app_error.c
     ${PLATFORM_PATH}/sdk/components/libraries/util/app_error_handler_gcc.c
     ${PLATFORM_PATH}/sdk/components/libraries/util/app_error_weak.c
     ${PLATFORM_PATH}/sdk/components/libraries/util/app_util_platform.c
     ${PLATFORM_PATH}/sdk/components/libraries/atomic/nrf_atomic.c
+    ${PLATFORM_PATH}/sdk/components/libraries/queue/nrf_queue.c
     ${PLATFORM_PATH}/sdk/components/libraries/balloc/nrf_balloc.c
     ${PLATFORM_PATH}/sdk/components/libraries/log/src/nrf_log_frontend.c
     ${PLATFORM_PATH}/sdk/components/libraries/memobj/nrf_memobj.c
     ${PLATFORM_PATH}/sdk/components/libraries/strerror/nrf_strerror.c
+    ${PLATFORM_PATH}/sdk/components/drivers_nrf/usbd/nrf_drv_usbd.c
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd/app_usbd.c
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd/app_usbd_core.c
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd/app_usbd_serial_num.c
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd/app_usbd_string_desc.c
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd/class/cdc/acm/app_usbd_cdc_acm.c
 )
 
 # Required Qorvo SDK sources.
@@ -206,6 +215,7 @@ set(INCLUDE_DIRS
     ${PLATFORM_PATH}/sdk/components/boards
     ${PLATFORM_PATH}/sdk/components/toolchain/cmsis/include
     ${PLATFORM_PATH}/sdk/components/libraries/balloc
+    ${PLATFORM_PATH}/sdk/components/libraries/queue
     ${PLATFORM_PATH}/sdk/components/libraries/ringbuf
     ${PLATFORM_PATH}/sdk/components/libraries/log
     ${PLATFORM_PATH}/sdk/components/libraries/log/src
@@ -215,6 +225,12 @@ set(INCLUDE_DIRS
     ${PLATFORM_PATH}/sdk/components/libraries/delay
     ${PLATFORM_PATH}/sdk/components/libraries/experimental_section_vars
     ${PLATFORM_PATH}/sdk/components/libraries/strerror
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd
+    ${PLATFORM_PATH}/sdk/components/drivers_nrf/power
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd/config
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd/class/cdc
+    ${PLATFORM_PATH}/sdk/components/libraries/usbd/class/cdc/acm
+    ${PLATFORM_PATH}/sdk/components/drivers_nrf/usbd
     ${PLATFORM_PATH}/sdk/modules/nrfx
     ${PLATFORM_PATH}/sdk/modules/nrfx/hal
     ${PLATFORM_PATH}/sdk/modules/nrfx/mdk
@@ -261,6 +277,7 @@ target_compile_definitions(${TARGET_ELF} PRIVATE
     NB_DW_DRIVERS=2
     NRF_LOG_BACKEND_RTT_ENABLED=$<IF:$<CONFIG:Debug>,1,0>
     NRF_LOG_ENABLED=$<IF:$<CONFIG:Debug>,1,0>
+    USE_USB_CDC=1
     # UWB config: option 35 = channel 5, PRF 64M, preamble 128, 6.8 Mbps, STS 64.
     CMAKE_UWB_CONFIG_OPTION=35
     # Role selection for main.c.
