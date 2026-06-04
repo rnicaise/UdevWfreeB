@@ -61,7 +61,7 @@ void dw_irq_init(void)
 
     /* WAKEUP pin — configure as output only if valid.
      * On DWM3001CDK the real WAKEUP is P1.19 which doesn't exist on nRF52833.
-     * We still configure our safe substitute (P1.9) so SET_WAKEUP_PIN_IO macros work. */
+     * We still configure our safe substitute (P1.3) so SET_WAKEUP_PIN_IO macros work. */
     nrf_gpio_cfg_output(DW3000_WAKEUP_Pin);
 
     /* No IRQ2 — DWM3001CDK has only one DW3000 */

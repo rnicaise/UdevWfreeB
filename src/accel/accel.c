@@ -1,198 +1,475 @@
 /*
- * accel.c - LIS2DH12 driver via TWIM1 (minimal, blocking, no SDK TWI)
+ * accel.c - BMI323 accelerometer backend over SPI (blocking)
  *
- * Uses nRF52833 TWIM1 registers directly.
- * No dependency on nrf_twi_sensor / nrf_drv_twi.
- *
- * Internal I2C pins on DWM3001C module:
- *   SDA = P0.16   SCL = P0.13   (validated via WHO_AM_I at boot)
- *
- * NOTE: TWIM0 shares a peripheral block with UARTE0 on nRF52.
- * The firmware uses UARTE0 for USB serial logging, so the accelerometer must
- * use TWIM1 to keep UART output alive.
+ * The public API stays unchanged: accel_init() / accel_read().
  */
 
 #include "accel.h"
+
 #include <nrf.h>
 #include <nrf_gpio.h>
-#include <string.h>
+#include <nrf_delay.h>
 
-/* ── DWM3001C module I2C pins (from datasheet Rev F, Table 2) ── */
-#define ACC_SDA_PIN     NRF_GPIO_PIN_MAP(0, 24)   /* I2C0_SDA, pin 14 */
-#define ACC_SCL_PIN     NRF_GPIO_PIN_MAP(1,  4)   /* I2C0_SCL, pin 15 */
+/* BMI323 wiring on DWM3001C (SPI 4-wire). */
+#define BMI323_SCLK_PIN NRF_GPIO_PIN_MAP(0, 17)
+#define BMI323_MOSI_PIN NRF_GPIO_PIN_MAP(0, 20)
+#define BMI323_MISO_PIN NRF_GPIO_PIN_MAP(0, 21)
+#define BMI323_CS_PIN   NRF_GPIO_PIN_MAP(0, 11)
+#define BMI323_INT1_PIN NRF_GPIO_PIN_MAP(1, 8)
+#define BMI323_INT2_PIN NRF_GPIO_PIN_MAP(0, 6)
 
-/* ── LIS2DH12 I2C address ── */
-/* SA0=HIGH → 0x19, SA0=LOW → 0x18. We try both. */
-#define LIS2DH12_ADDR_HIGH  0x19
-#define LIS2DH12_ADDR_LOW   0x18
+#define BMI323_SPI NRF_SPIM2
+#define BMI323_SPI_TIMEOUT 640000u
 
-/* ── LIS2DH12 registers ── */
-#define LIS2DH12_WHO_AM_I       0x0F
-#define LIS2DH12_WHO_AM_I_VAL   0x33
-#define LIS2DH12_CTRL_REG1      0x20
-#define LIS2DH12_CTRL_REG4      0x23
-#define LIS2DH12_OUT_X_L        0x28
+/* BMI323 register map (8-bit register addresses, 16-bit register values). */
+#define BMI323_REG_CHIP_ID    0x00u
+#define BMI323_REG_ERR_REG    0x01u
+#define BMI323_REG_ACC_DATA_X 0x03u
+#define BMI323_REG_ACC_CONF   0x20u
 
-/* ── TWIM1 instance ── */
-#define TWI  NRF_TWIM1
+#define BMI323_CHIP_ID_EXPECTED 0x43u
 
-/* ── Timeout for TWI operations (~10ms at 64MHz) ── */
-#define TWI_TIMEOUT  640000
+/* Accel-only: normal mode, 8g, 50 Hz. */
+#define BMI323_ACC_CONF_VALUE 0x4027u
 
-/* ── Internal helpers ── */
+/* ERR_REG bit0 = fatal error. */
+#define BMI323_ERR_FATAL_MASK 0x0001u
 
-static void twim_init(void)
+/* SPI read decoding discovered at runtime from CHIP_ID transaction. */
+static uint8_t g_read_addr_flag = 0x80u;
+static uint8_t g_read_data_lsb_idx = 2u;
+static uint8_t g_spi_cpol = SPIM_CONFIG_CPOL_ActiveHigh;
+static uint8_t g_spi_cpha = SPIM_CONFIG_CPHA_Leading;
+static uint8_t g_probe_rx[5] = { 0 };
+static uint16_t g_chip_id_reg = 0u;
+static uint16_t g_err_reg = 0u;
+static bool g_probe_ok = false;
+static bool g_use_bitbang = false;
+
+static void bmi323_spi_set_mode(uint32_t cpol, uint32_t cpha)
 {
-    /* Disable alternate functions sharing the same peripheral block as TWIM1. */
-    NRF_UARTE1->ENABLE = 0;
-    NRF_SPIM1->ENABLE = 0;
-    NRF_SPI1->ENABLE  = 0;
-
-    /* Configure GPIO for I2C */
-    nrf_gpio_cfg(ACC_SCL_PIN,
-        NRF_GPIO_PIN_DIR_INPUT,
-        NRF_GPIO_PIN_INPUT_CONNECT,
-        NRF_GPIO_PIN_PULLUP,
-        NRF_GPIO_PIN_S0D1,   /* Standard 0, Disconnect 1 (open-drain) */
-        NRF_GPIO_PIN_NOSENSE);
-
-    nrf_gpio_cfg(ACC_SDA_PIN,
-        NRF_GPIO_PIN_DIR_INPUT,
-        NRF_GPIO_PIN_INPUT_CONNECT,
-        NRF_GPIO_PIN_PULLUP,
-        NRF_GPIO_PIN_S0D1,
-        NRF_GPIO_PIN_NOSENSE);
-
-    /* Configure TWIM1 */
-    TWI->PSEL.SCL = ACC_SCL_PIN;
-    TWI->PSEL.SDA = ACC_SDA_PIN;
-    TWI->ADDRESS  = LIS2DH12_ADDR_HIGH;  /* will try LOW if WHO_AM_I fails */
-    TWI->FREQUENCY = TWIM_FREQUENCY_FREQUENCY_K100;  /* 100 kHz (conservative) */
-
-    /* Enable */
-    TWI->ENABLE = TWIM_ENABLE_ENABLE_Enabled;
+    g_spi_cpol = (uint8_t)cpol;
+    g_spi_cpha = (uint8_t)cpha;
+    BMI323_SPI->CONFIG =
+        (SPIM_CONFIG_ORDER_MsbFirst << SPIM_CONFIG_ORDER_Pos) |
+        (cpol << SPIM_CONFIG_CPOL_Pos) |
+        (cpha << SPIM_CONFIG_CPHA_Pos);
 }
 
-static bool twi_write(const uint8_t *data, uint8_t len)
+static void bmi323_spi_select_interface(void)
 {
-    volatile uint32_t timeout = TWI_TIMEOUT;
+    nrf_gpio_pin_clear(BMI323_CS_PIN);
+    nrf_delay_us(5u);
+    nrf_gpio_pin_set(BMI323_CS_PIN);
+    nrf_delay_us(250u);
+}
 
-    TWI->TXD.PTR    = (uint32_t)data;
-    TWI->TXD.MAXCNT = len;
+static void bmi323_bitbang_init(void)
+{
+    NRF_SPIM2->ENABLE = 0;
+    NRF_SPI2->ENABLE = 0;
 
-    TWI->EVENTS_STOPPED = 0;
-    TWI->EVENTS_ERROR   = 0;
+    nrf_gpio_cfg_output(BMI323_CS_PIN);
+    nrf_gpio_cfg_output(BMI323_SCLK_PIN);
+    nrf_gpio_cfg_output(BMI323_MOSI_PIN);
+    nrf_gpio_cfg_input(BMI323_MISO_PIN, NRF_GPIO_PIN_NOPULL);
+    nrf_gpio_cfg_input(BMI323_INT1_PIN, NRF_GPIO_PIN_NOPULL);
+    nrf_gpio_cfg_input(BMI323_INT2_PIN, NRF_GPIO_PIN_NOPULL);
 
-    /* TX only, then STOP */
-    TWI->SHORTS = TWIM_SHORTS_LASTTX_STOP_Msk;
-    TWI->TASKS_STARTTX = 1;
+    nrf_gpio_pin_clear(BMI323_SCLK_PIN);
+    nrf_gpio_pin_set(BMI323_MOSI_PIN);
+    nrf_gpio_pin_set(BMI323_CS_PIN);
 
-    while (!TWI->EVENTS_STOPPED && !TWI->EVENTS_ERROR && --timeout) { }
+    g_use_bitbang = true;
+    g_spi_cpol = 0u;
+    g_spi_cpha = 0u;
 
-    if (!timeout || TWI->EVENTS_ERROR) {
-        TWI->EVENTS_ERROR = 0;
-        TWI->TASKS_STOP = 1;
-        timeout = TWI_TIMEOUT;
-        while (!TWI->EVENTS_STOPPED && --timeout) { }
-        TWI->EVENTS_STOPPED = 0;
+    bmi323_spi_select_interface();
+}
+
+static uint8_t bmi323_bitbang_byte(uint8_t tx)
+{
+    uint8_t rx = 0u;
+
+    for (uint8_t bit = 0u; bit < 8u; bit++)
+    {
+        if ((tx & 0x80u) != 0u)
+        {
+            nrf_gpio_pin_set(BMI323_MOSI_PIN);
+        }
+        else
+        {
+            nrf_gpio_pin_clear(BMI323_MOSI_PIN);
+        }
+
+        nrf_delay_us(2u);
+        nrf_gpio_pin_set(BMI323_SCLK_PIN);
+        nrf_delay_us(2u);
+
+        rx <<= 1;
+        if (nrf_gpio_pin_read(BMI323_MISO_PIN) != 0u)
+        {
+            rx |= 1u;
+        }
+
+        nrf_gpio_pin_clear(BMI323_SCLK_PIN);
+        nrf_delay_us(2u);
+        tx <<= 1;
+    }
+
+    return rx;
+}
+
+static bool bmi323_bitbang_xfer(const uint8_t *tx, uint8_t *rx, uint8_t len)
+{
+    static uint8_t rx_sink[16];
+
+    if ((tx == NULL) || (len == 0u) || (len > 16u))
+    {
         return false;
     }
 
-    TWI->EVENTS_STOPPED = 0;
+    if (rx == NULL)
+    {
+        rx = rx_sink;
+    }
+
+    for (uint8_t i = 0u; i < len; i++)
+    {
+        rx[i] = bmi323_bitbang_byte(tx[i]);
+    }
+
     return true;
 }
 
-static bool twi_write_then_read(const uint8_t *tx, uint8_t tx_len,
-                                 uint8_t *rx, uint8_t rx_len)
+static void bmi323_spi_init(void)
 {
-    volatile uint32_t timeout = TWI_TIMEOUT;
+    NRF_SPIM2->ENABLE = 0;
+    NRF_SPI2->ENABLE = 0;
+    g_use_bitbang = false;
 
-    TWI->TXD.PTR    = (uint32_t)tx;
-    TWI->TXD.MAXCNT = tx_len;
-    TWI->RXD.PTR    = (uint32_t)rx;
-    TWI->RXD.MAXCNT = rx_len;
+    nrf_gpio_cfg_output(BMI323_CS_PIN);
+    nrf_gpio_pin_set(BMI323_CS_PIN);
 
-    TWI->EVENTS_STOPPED = 0;
-    TWI->EVENTS_ERROR   = 0;
+    nrf_gpio_cfg_input(BMI323_INT1_PIN, NRF_GPIO_PIN_NOPULL);
+    nrf_gpio_cfg_input(BMI323_INT2_PIN, NRF_GPIO_PIN_NOPULL);
 
-    /* TX then RX then STOP */
-    TWI->SHORTS = TWIM_SHORTS_LASTTX_STARTRX_Msk | TWIM_SHORTS_LASTRX_STOP_Msk;
-    TWI->TASKS_STARTTX = 1;
+    BMI323_SPI->PSEL.SCK = BMI323_SCLK_PIN;
+    BMI323_SPI->PSEL.MOSI = BMI323_MOSI_PIN;
+    BMI323_SPI->PSEL.MISO = BMI323_MISO_PIN;
 
-    while (!TWI->EVENTS_STOPPED && !TWI->EVENTS_ERROR && --timeout) { }
+    BMI323_SPI->FREQUENCY = SPIM_FREQUENCY_FREQUENCY_M1;
+    bmi323_spi_set_mode(SPIM_CONFIG_CPOL_ActiveHigh, SPIM_CONFIG_CPHA_Leading);
+    BMI323_SPI->ORC = 0xFFu;
+    BMI323_SPI->ENABLE = SPIM_ENABLE_ENABLE_Enabled;
 
-    if (!timeout || TWI->EVENTS_ERROR) {
-        TWI->EVENTS_ERROR = 0;
-        TWI->TASKS_STOP = 1;
-        timeout = TWI_TIMEOUT;
-        while (!TWI->EVENTS_STOPPED && --timeout) { }
-        TWI->EVENTS_STOPPED = 0;
+    bmi323_spi_select_interface();
+}
+
+static bool bmi323_spi_xfer(const uint8_t *tx, uint8_t *rx, uint8_t len)
+{
+    static uint8_t rx_sink[16];
+    volatile uint32_t timeout = BMI323_SPI_TIMEOUT;
+
+    if (g_use_bitbang)
+    {
+        return bmi323_bitbang_xfer(tx, rx, len);
+    }
+
+    if ((len == 0u) || (len > 16u))
+    {
         return false;
     }
 
-    TWI->EVENTS_STOPPED = 0;
+    if (rx == NULL)
+    {
+        rx = rx_sink;
+    }
+
+    BMI323_SPI->TXD.PTR = (uint32_t)tx;
+    BMI323_SPI->TXD.MAXCNT = len;
+    BMI323_SPI->RXD.PTR = (uint32_t)rx;
+    BMI323_SPI->RXD.MAXCNT = len;
+    BMI323_SPI->EVENTS_END = 0;
+    BMI323_SPI->EVENTS_STOPPED = 0;
+
+    BMI323_SPI->TASKS_START = 1;
+    while ((BMI323_SPI->EVENTS_END == 0u) && (--timeout > 0u)) { }
+
+    BMI323_SPI->TASKS_STOP = 1;
+    timeout = BMI323_SPI_TIMEOUT;
+    while ((BMI323_SPI->EVENTS_STOPPED == 0u) && (--timeout > 0u)) { }
+    BMI323_SPI->EVENTS_STOPPED = 0;
+
+    return BMI323_SPI->EVENTS_END != 0u;
+}
+
+static bool bmi323_try_read_chip_id_mode(uint8_t addr_flag, uint8_t data_lsb_idx)
+{
+    uint8_t tx[5] = { 0 };
+    uint8_t rx[5] = { 0 };
+    uint16_t reg_word;
+
+    tx[0] = (uint8_t)(BMI323_REG_CHIP_ID | addr_flag);
+    tx[1] = 0xFFu;
+    tx[2] = 0xFFu;
+    tx[3] = 0xFFu;
+    tx[4] = 0xFFu;
+
+    nrf_gpio_pin_clear(BMI323_CS_PIN);
+    nrf_delay_us(1u);
+    if (!bmi323_spi_xfer(tx, rx, sizeof(tx)))
+    {
+        nrf_gpio_pin_set(BMI323_CS_PIN);
+        nrf_delay_us(2u);
+        return false;
+    }
+    nrf_delay_us(1u);
+    nrf_gpio_pin_set(BMI323_CS_PIN);
+    nrf_delay_us(2u);
+
+    for (uint8_t i = 0u; i < sizeof(g_probe_rx); i++)
+    {
+        g_probe_rx[i] = rx[i];
+    }
+
+    if ((data_lsb_idx + 1u) >= sizeof(rx))
+    {
+        return false;
+    }
+
+    reg_word = (uint16_t)rx[data_lsb_idx] | ((uint16_t)rx[data_lsb_idx + 1u] << 8);
+    g_chip_id_reg = reg_word;
+    g_read_addr_flag = addr_flag;
+    g_read_data_lsb_idx = data_lsb_idx;
+    return (uint8_t)(reg_word & 0x00FFu) == BMI323_CHIP_ID_EXPECTED;
+}
+
+static bool bmi323_detect_read_mode(void)
+{
+    static const uint8_t addr_flags[] = { 0x80u, 0x00u };
+    static const uint8_t data_idxs[] = { 1u, 2u, 3u };
+    static const uint8_t cpols[] = {
+        SPIM_CONFIG_CPOL_ActiveHigh,
+        SPIM_CONFIG_CPOL_ActiveLow
+    };
+    static const uint8_t cphas[] = {
+        SPIM_CONFIG_CPHA_Leading,
+        SPIM_CONFIG_CPHA_Trailing
+    };
+
+    for (uint8_t m = 0u; m < (sizeof(cpols) / sizeof(cpols[0])); m++)
+    {
+        for (uint8_t n = 0u; n < (sizeof(cphas) / sizeof(cphas[0])); n++)
+        {
+            bmi323_spi_set_mode(cpols[m], cphas[n]);
+
+            for (uint8_t i = 0u; i < (sizeof(addr_flags) / sizeof(addr_flags[0])); i++)
+            {
+                for (uint8_t j = 0u; j < (sizeof(data_idxs) / sizeof(data_idxs[0])); j++)
+                {
+                    if (bmi323_try_read_chip_id_mode(addr_flags[i], data_idxs[j]))
+                    {
+                        g_read_addr_flag = addr_flags[i];
+                        g_read_data_lsb_idx = data_idxs[j];
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+static bool bmi323_read_reg16(uint8_t addr, uint16_t *value)
+{
+    uint8_t tx[5] = { 0 };
+    uint8_t rx[5] = { 0 };
+
+    if (value == NULL)
+    {
+        return false;
+    }
+
+    tx[0] = (uint8_t)(addr | g_read_addr_flag);
+    tx[1] = 0xFFu;
+    tx[2] = 0xFFu;
+    tx[3] = 0xFFu;
+    tx[4] = 0xFFu;
+
+    nrf_gpio_pin_clear(BMI323_CS_PIN);
+    nrf_delay_us(1u);
+    if (!bmi323_spi_xfer(tx, rx, sizeof(tx)))
+    {
+        nrf_gpio_pin_set(BMI323_CS_PIN);
+        nrf_delay_us(2u);
+        return false;
+    }
+    nrf_delay_us(1u);
+    nrf_gpio_pin_set(BMI323_CS_PIN);
+    nrf_delay_us(2u);
+
+    if ((g_read_data_lsb_idx + 1u) >= sizeof(rx))
+    {
+        return false;
+    }
+
+    *value = (uint16_t)rx[g_read_data_lsb_idx] |
+             ((uint16_t)rx[g_read_data_lsb_idx + 1u] << 8);
     return true;
 }
 
-static bool lis2dh12_write_reg(uint8_t reg, uint8_t val)
+static bool bmi323_write_reg16(uint8_t addr, uint16_t value)
 {
-    uint8_t buf[2] = { reg, val };
-    return twi_write(buf, 2);
+    uint8_t tx[3];
+
+    tx[0] = (uint8_t)(addr & 0x7Fu);
+    tx[1] = (uint8_t)(value & 0x00FFu);
+    tx[2] = (uint8_t)((value >> 8) & 0x00FFu);
+
+    nrf_gpio_pin_clear(BMI323_CS_PIN);
+    nrf_delay_us(1u);
+    if (!bmi323_spi_xfer(tx, NULL, sizeof(tx)))
+    {
+        nrf_gpio_pin_set(BMI323_CS_PIN);
+        nrf_delay_us(2u);
+        return false;
+    }
+    nrf_delay_us(1u);
+    nrf_gpio_pin_set(BMI323_CS_PIN);
+    nrf_delay_us(2u);
+    return true;
 }
 
-static bool lis2dh12_read_reg(uint8_t reg, uint8_t *val)
+static int16_t bmi323_raw_to_mg(int16_t raw)
 {
-    return twi_write_then_read(&reg, 1, val, 1);
-}
+    /* ACC_CONF sets range to +/-8g. Signed 16-bit full-scale => 8000 mg / 32768 LSB. */
+    int32_t num = (int32_t)raw * 8000;
 
-/* ── Public API ── */
+    if (num >= 0)
+    {
+        return (int16_t)((num + 16384) / 32768);
+    }
+    return (int16_t)((num - 16384) / 32768);
+}
 
 bool accel_init(void)
 {
-    twim_init();
+    uint16_t chip_id_reg = 0u;
+    uint16_t err_reg;
 
-    /* Try address 0x19 first, then 0x18 */
-    uint8_t who = 0;
-    if (!lis2dh12_read_reg(LIS2DH12_WHO_AM_I, &who) || who != LIS2DH12_WHO_AM_I_VAL) {
-        /* Try alternate address */
-        TWI->ENABLE = 0;
-        TWI->ADDRESS = LIS2DH12_ADDR_LOW;
-        TWI->ENABLE = TWIM_ENABLE_ENABLE_Enabled;
-        who = 0;
-        if (!lis2dh12_read_reg(LIS2DH12_WHO_AM_I, &who) || who != LIS2DH12_WHO_AM_I_VAL) {
+    g_probe_ok = false;
+    g_chip_id_reg = 0u;
+    g_err_reg = 0u;
+    for (uint8_t i = 0u; i < sizeof(g_probe_rx); i++)
+    {
+        g_probe_rx[i] = 0u;
+    }
+
+    bmi323_spi_init();
+    nrf_delay_ms(2u);
+
+    if (!bmi323_detect_read_mode())
+    {
+        bmi323_bitbang_init();
+        nrf_delay_ms(2u);
+
+        if (!bmi323_detect_read_mode())
+        {
             return false;
         }
     }
 
-    /* CTRL_REG1: 100 Hz, normal mode, XYZ enabled */
-    lis2dh12_write_reg(LIS2DH12_CTRL_REG1, 0x57);  /* ODR=100Hz, LP=0, XYZ=en */
+    if (!bmi323_read_reg16(BMI323_REG_CHIP_ID, &chip_id_reg))
+    {
+        return false;
+    }
+    g_chip_id_reg = chip_id_reg;
 
-    /* CTRL_REG4: ±2g, high-resolution */
-    lis2dh12_write_reg(LIS2DH12_CTRL_REG4, 0x08);  /* BDU=0, FS=±2g, HR=1 */
+    if (!bmi323_write_reg16(BMI323_REG_ACC_CONF, BMI323_ACC_CONF_VALUE))
+    {
+        return false;
+    }
 
+    nrf_delay_ms(5u);
+
+    if (!bmi323_read_reg16(BMI323_REG_ERR_REG, &err_reg))
+    {
+        return false;
+    }
+    g_err_reg = err_reg;
+
+    if ((err_reg & BMI323_ERR_FATAL_MASK) != 0u)
+    {
+        return false;
+    }
+
+    g_probe_ok = ((uint8_t)(chip_id_reg & 0x00FFu) == BMI323_CHIP_ID_EXPECTED);
     return true;
 }
 
 bool accel_read(accel_data_t *data)
 {
-    uint8_t raw[6];
-    /* Auto-increment read: set MSB of register address */
-    uint8_t reg = LIS2DH12_OUT_X_L | 0x80;
+    uint16_t raw_x;
+    uint16_t raw_y;
+    uint16_t raw_z;
+    int16_t x;
+    int16_t y;
+    int16_t z;
 
-    if (!twi_write_then_read(&reg, 1, raw, 6)) {
+    if (data == NULL)
+    {
         return false;
     }
 
-    /* Raw values are 12-bit left-justified in 16-bit (high-resolution mode)
-     * Sensitivity at ±2g HR = 1 mg/digit (after >>4)
-     */
-    int16_t raw_x = (int16_t)(raw[1] << 8 | raw[0]) >> 4;
-    int16_t raw_y = (int16_t)(raw[3] << 8 | raw[2]) >> 4;
-    int16_t raw_z = (int16_t)(raw[5] << 8 | raw[4]) >> 4;
+    if (!bmi323_read_reg16(BMI323_REG_ACC_DATA_X, &raw_x))
+    {
+        return false;
+    }
+    if (!bmi323_read_reg16((uint8_t)(BMI323_REG_ACC_DATA_X + 1u), &raw_y))
+    {
+        return false;
+    }
+    if (!bmi323_read_reg16((uint8_t)(BMI323_REG_ACC_DATA_X + 2u), &raw_z))
+    {
+        return false;
+    }
 
-    data->x = raw_x;  /* Already in mg at ±2g HR */
-    data->y = raw_y;
-    data->z = raw_z;
+    if ((raw_x == 0x8000u) || (raw_y == 0x8000u) || (raw_z == 0x8000u))
+    {
+        return false;
+    }
 
+    x = (int16_t)raw_x;
+    y = (int16_t)raw_y;
+    z = (int16_t)raw_z;
+
+    data->x = bmi323_raw_to_mg(x);
+    data->y = bmi323_raw_to_mg(y);
+    data->z = bmi323_raw_to_mg(z);
+
+    return true;
+}
+
+bool accel_get_diag(accel_diag_t *diag)
+{
+    if (diag == NULL)
+    {
+        return false;
+    }
+
+    diag->chip_id_reg = g_chip_id_reg;
+    diag->err_reg = g_err_reg;
+    diag->read_addr_flag = g_read_addr_flag;
+    diag->read_data_lsb_idx = g_read_data_lsb_idx;
+    diag->spi_cpol = g_spi_cpol;
+    diag->spi_cpha = g_spi_cpha;
+    for (uint8_t i = 0u; i < sizeof(diag->probe_rx); i++)
+    {
+        diag->probe_rx[i] = g_probe_rx[i];
+    }
+    diag->bitbang = g_use_bitbang;
+    diag->probe_ok = g_probe_ok;
     return true;
 }

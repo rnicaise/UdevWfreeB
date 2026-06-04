@@ -82,7 +82,7 @@ extern "C" {
 #define ARDUINO_12_PIN              NRF_GPIO_PIN_MAP(0, 29)  /* SPI MISO */
 #define ARDUINO_11_PIN              NRF_GPIO_PIN_MAP(0, 8)   /* SPI MOSI */
 #define ARDUINO_10_PIN              NRF_GPIO_PIN_MAP(1, 6)   /* SPI CS */
-#define ARDUINO_9_PIN               NRF_GPIO_PIN_MAP(1, 9)   /* WAKEUP (safe P1 pin) */
+#define ARDUINO_9_PIN               NRF_GPIO_PIN_MAP(1, 3)   /* WAKEUP (safe unused pin) */
 #define ARDUINO_8_PIN               NRF_GPIO_PIN_MAP(1, 2)   /* IRQ */
 #define ARDUINO_7_PIN               NRF_GPIO_PIN_MAP(0, 25)  /* RESET */
 #define ARDUINO_6_PIN               NRF_GPIO_PIN_MAP(1, 7)   /* IRQ2 (unused) */

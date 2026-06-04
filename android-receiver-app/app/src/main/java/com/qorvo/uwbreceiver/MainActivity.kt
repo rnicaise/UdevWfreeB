@@ -45,6 +45,7 @@ class MainActivity : ComponentActivity() {
                     state = uiState,
                     onConnect = viewModel::connect,
                     onDisconnect = viewModel::disconnect,
+                    onFire = viewModel::fire,
                     onStartRecording = viewModel::startRecording,
                     onStopRecording = viewModel::stopRecording,
                     onShare = { viewModel.requestShare(uiState.runtime.lastSavedUri) },

@@ -41,6 +41,7 @@
 #define POLL_MSG_ACQ_TOKEN_IDX    19
 #define POLL_MSG_TEST_PROFILE_IDX 20
 #define POLL_MSG_RANGING_MODE_IDX 21
+#define POLL_MSG_FIRE_IDX         22
 
 #define RESP_MSG_CTRL_OPT_IDX   11
 #define RESP_MSG_CTRL_TOKEN_IDX 12
@@ -76,7 +77,8 @@ static uint8_t tx_poll_msg[] = {
     RNG_DELAY_MS,         /* [18] acquisition period currently applied (ms) */
     0,                    /* [19] period switch token */
     UWB_TEST_PROFILE_DEFAULT, /* [20] active safe test profile */
-    1                     /* [21] fixed ranging mode: SS-TWR */
+    1,                    /* [21] fixed ranging mode: SS-TWR */
+    0                     /* [22] fire relay flag to responder */
 };
 
 /* Response expected from responder */
@@ -136,6 +138,7 @@ static bool switch_request_armed = false;
 static uint8_t pending_acq_period_ms = RNG_DELAY_MS;
 static uint8_t pending_acq_token = 0;
 static bool acq_request_armed = false;
+static uint8_t fire_request_frames_remaining = 0;
 
 static const uwb_runtime_profile_t *active_profile = NULL;
 static char output_buf[224];
@@ -316,6 +319,13 @@ static void handle_app_command(const char *cmd)
         return;
     }
 
+    if ((strcmp(cmd, "PYRO,FIRE") == 0) || (strcmp(cmd, "FIRE") == 0))
+    {
+        fire_request_frames_remaining = 30u;
+        uart_log_write("ACK,PYRO_FORWARD_ARMED");
+        return;
+    }
+
     uart_log_write("ERR,READ_ONLY_SS_TWR");
 }
 
@@ -388,12 +398,12 @@ int ss_twr_initiator_custom(void)
     /* LEDs for visual debugging */
     dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);
 
-    /* -- Initialize LIS2DH12 accelerometer (I2C internal to DWM3001C module) -- */
+    /* -- Initialize external BMI323 accelerometer (SPI) -- */
     accel_ok = accel_init();
     if (accel_ok) {
-        test_run_info((unsigned char *)"ACCEL OK (LIS2DH12)");
+        test_run_info((unsigned char *)"ACCEL OK (BMI323 SPI)");
     } else {
-        test_run_info((unsigned char *)"ACCEL FAIL — check I2C pins");
+        test_run_info((unsigned char *)"ACCEL FAIL — check BMI323 SPI");
     }
 
     /* CSV header on UART */
@@ -456,6 +466,11 @@ int ss_twr_initiator_custom(void)
         tx_poll_msg[POLL_MSG_ACQ_TOKEN_IDX] = acq_request_armed ? pending_acq_token : 0u;
         tx_poll_msg[POLL_MSG_TEST_PROFILE_IDX] = active_test_profile;
         tx_poll_msg[POLL_MSG_RANGING_MODE_IDX] = RANGING_MODE_SS_TWR;
+        tx_poll_msg[POLL_MSG_FIRE_IDX] = (fire_request_frames_remaining > 0u) ? 1u : 0u;
+        if (fire_request_frames_remaining > 0u)
+        {
+            fire_request_frames_remaining--;
+        }
 
         /* === TX POLL === */
         tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;

@@ -12,6 +12,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <nrf.h>
+#include <nrf_gpio.h>
+#include <nrf_delay.h>
 
 #include "../common/ranging.h"
 #include "../common/uwb_profiles.h"
@@ -25,6 +27,7 @@
 #define POLL_MSG_ACQ_TOKEN_IDX    19
 #define POLL_MSG_TEST_PROFILE_IDX 20
 #define POLL_MSG_RANGING_MODE_IDX 21
+#define POLL_MSG_FIRE_IDX         22
 
 #define RESP_MSG_CTRL_OPT_IDX         11
 #define RESP_MSG_CTRL_TOKEN_IDX       12
@@ -119,8 +122,30 @@ static uint32_t responder_accel_sample_count = 0;
 
 static const uwb_runtime_profile_t *active_profile = NULL;
 
+#define BUZZER_TEST_PIN NRF_GPIO_PIN_MAP(1, 5)
+#define PYRO_TRIGGER_PIN NRF_GPIO_PIN_MAP(1, 9)
+#define PYRO_LED_PIN_0 NRF_GPIO_PIN_MAP(0, 14)
+#define PYRO_LED_PIN_1 NRF_GPIO_PIN_MAP(0, 22)
+#define PYRO_LED_PIN_2 NRF_GPIO_PIN_MAP(0, 5)
+#define PYRO_LED_PIN_3 NRF_GPIO_PIN_MAP(0, 4)
+#define PYRO_COUNTDOWN_TICKS (32768u * 10u)
+#define PYRO_FIRE_TICKS      (32768u * 2u)
+#define RTC2_COUNTER_MASK         0x00FFFFFFu
+
 static char output_buf[320];
 static char cmd_buf[96];
+
+typedef enum {
+    PYRO_STATE_IDLE = 0,
+    PYRO_STATE_COUNTDOWN,
+    PYRO_STATE_FIRE
+} pyro_state_t;
+
+static pyro_state_t pyro_state = PYRO_STATE_IDLE;
+static uint32_t pyro_state_start_tick = 0u;
+static uint32_t pyro_next_fx_tick = 0u;
+static bool pyro_leds_on = false;
+static bool pyro_fire_requested = false;
 
 extern dwt_config_t config_options;
 extern dwt_txconfig_t txconfig_options;
@@ -129,6 +154,210 @@ extern dwt_txconfig_t txconfig_options_ch9;
 extern void test_run_info(unsigned char *data);
 
 static void handle_app_command(const char *cmd);
+
+static void pyro_leds_set(bool on)
+{
+    pyro_leds_on = on;
+    if (on)
+    {
+        /* Board LEDs are active low. */
+        nrf_gpio_pin_clear(PYRO_LED_PIN_0);
+        nrf_gpio_pin_clear(PYRO_LED_PIN_1);
+        nrf_gpio_pin_clear(PYRO_LED_PIN_2);
+        nrf_gpio_pin_clear(PYRO_LED_PIN_3);
+    }
+    else
+    {
+        nrf_gpio_pin_set(PYRO_LED_PIN_0);
+        nrf_gpio_pin_set(PYRO_LED_PIN_1);
+        nrf_gpio_pin_set(PYRO_LED_PIN_2);
+        nrf_gpio_pin_set(PYRO_LED_PIN_3);
+    }
+}
+
+static void pyro_leds_init(void)
+{
+    nrf_gpio_cfg_output(PYRO_LED_PIN_0);
+    nrf_gpio_cfg_output(PYRO_LED_PIN_1);
+    nrf_gpio_cfg_output(PYRO_LED_PIN_2);
+    nrf_gpio_cfg_output(PYRO_LED_PIN_3);
+    pyro_leds_set(false);
+}
+
+static void buzzer_play_tone(uint16_t freq_hz, uint16_t duration_ms)
+{
+    uint32_t half_period_us;
+    uint32_t total_toggles;
+    uint32_t i;
+
+    if (duration_ms == 0u)
+    {
+        return;
+    }
+
+    if (freq_hz == 0u)
+    {
+        nrf_gpio_pin_clear(BUZZER_TEST_PIN);
+        nrf_delay_ms(duration_ms);
+        return;
+    }
+
+    half_period_us = 500000u / (uint32_t)freq_hz;
+    if (half_period_us == 0u)
+    {
+        half_period_us = 1u;
+    }
+
+    total_toggles = ((uint32_t)duration_ms * 1000u) / half_period_us;
+    for (i = 0u; i < total_toggles; i++)
+    {
+        if ((i & 1u) == 0u)
+        {
+            nrf_gpio_pin_set(BUZZER_TEST_PIN);
+        }
+        else
+        {
+            nrf_gpio_pin_clear(BUZZER_TEST_PIN);
+        }
+        nrf_delay_us((uint16_t)half_period_us);
+    }
+
+    nrf_gpio_pin_clear(BUZZER_TEST_PIN);
+}
+
+static void buzzer_boot_beep(void)
+{
+    static const uint16_t melody_hz[] = {
+        880u, 784u, 659u, 523u, 440u, 0u
+    };
+    static const uint16_t melody_ms[] = {
+        110u, 110u, 130u, 160u, 260u, 140u
+    };
+    const uint32_t step_count = (uint32_t)(sizeof(melody_hz) / sizeof(melody_hz[0]));
+    uint32_t idx = 0u;
+
+    nrf_gpio_cfg_output(BUZZER_TEST_PIN);
+    nrf_gpio_pin_clear(BUZZER_TEST_PIN);
+
+    /* Short descending game-over style jingle at boot. */
+    for (idx = 0u; idx < step_count; idx++)
+    {
+        buzzer_play_tone(melody_hz[idx], melody_ms[idx]);
+    }
+
+    nrf_gpio_pin_clear(BUZZER_TEST_PIN);
+}
+
+static void buzzer_accel_diag(bool ok)
+{
+    if (ok)
+    {
+        buzzer_play_tone(880u, 80u);
+        buzzer_play_tone(0u, 40u);
+        buzzer_play_tone(1320u, 120u);
+        return;
+    }
+
+    for (uint8_t i = 0u; i < 3u; i++)
+    {
+        buzzer_play_tone(220u, 120u);
+        buzzer_play_tone(0u, 80u);
+    }
+}
+
+static void pyro_trigger_init(void)
+{
+    nrf_gpio_cfg_output(PYRO_TRIGGER_PIN);
+    nrf_gpio_pin_clear(PYRO_TRIGGER_PIN);
+    pyro_leds_init();
+
+    if ((NRF_UICR->NFCPINS & UICR_NFCPINS_PROTECT_Msk) == (UICR_NFCPINS_PROTECT_NFC << UICR_NFCPINS_PROTECT_Pos))
+    {
+        uart_log_write("PYRO,NFC_MODE");
+    }
+    else
+    {
+        uart_log_write("PYRO,GPIO_MODE");
+    }
+
+    pyro_state = PYRO_STATE_IDLE;
+    pyro_state_start_tick = NRF_RTC2->COUNTER;
+    pyro_next_fx_tick = pyro_state_start_tick;
+    pyro_leds_on = false;
+    pyro_fire_requested = false;
+}
+
+static void pyro_trigger_process(void)
+{
+    uint32_t now = NRF_RTC2->COUNTER;
+
+    if ((pyro_state == PYRO_STATE_IDLE) && pyro_fire_requested)
+    {
+        pyro_fire_requested = false;
+        pyro_state = PYRO_STATE_COUNTDOWN;
+        pyro_state_start_tick = now;
+        pyro_next_fx_tick = now;
+        pyro_leds_set(false);
+        uart_log_write("PYRO,COUNTDOWN_START");
+        buzzer_play_tone(880u, 60u);
+    }
+
+    if (pyro_state == PYRO_STATE_COUNTDOWN)
+    {
+        uint32_t elapsed = (now - pyro_state_start_tick) & RTC2_COUNTER_MASK;
+
+        if (((now - pyro_state_start_tick) & RTC2_COUNTER_MASK) >= PYRO_COUNTDOWN_TICKS)
+        {
+            nrf_gpio_pin_set(PYRO_TRIGGER_PIN);
+            pyro_state = PYRO_STATE_FIRE;
+            pyro_state_start_tick = now;
+            pyro_leds_set(true);
+            buzzer_play_tone(1568u, 80u);
+            uart_log_write("PYRO,FIRE");
+            return;
+        }
+
+        if (((now - pyro_next_fx_tick) & RTC2_COUNTER_MASK) < 0x00800000u)
+        {
+            uint32_t remaining = PYRO_COUNTDOWN_TICKS - elapsed;
+            uint32_t interval_ticks;
+            uint16_t freq_hz = (uint16_t)(520u + ((elapsed * 1200u) / PYRO_COUNTDOWN_TICKS));
+
+            if (remaining > (32768u * 7u))
+            {
+                interval_ticks = 16384u;
+            }
+            else if (remaining > (32768u * 4u))
+            {
+                interval_ticks = 8192u;
+            }
+            else if (remaining > (32768u * 2u))
+            {
+                interval_ticks = 4096u;
+            }
+            else
+            {
+                interval_ticks = 2730u;
+            }
+
+            pyro_leds_set(!pyro_leds_on);
+            buzzer_play_tone(freq_hz, pyro_leds_on ? 40u : 25u);
+            pyro_next_fx_tick = now + interval_ticks;
+        }
+        return;
+    }
+
+    if (pyro_state == PYRO_STATE_FIRE)
+    {
+        if (((now - pyro_state_start_tick) & RTC2_COUNTER_MASK) >= PYRO_FIRE_TICKS)
+        {
+            nrf_gpio_pin_clear(PYRO_TRIGGER_PIN);
+            pyro_leds_set(false);
+            pyro_state = PYRO_STATE_IDLE;
+            uart_log_write("PYRO,DONE");
+        }
+    }
+}
 
 static bool is_supported_profile_opt(uint8_t opt)
 {
@@ -203,6 +432,19 @@ static void handle_app_command(const char *cmd)
         return;
     }
 
+    if ((strcmp(cmd, "PYRO,FIRE") == 0) || (strcmp(cmd, "FIRE") == 0))
+    {
+        if (pyro_state != PYRO_STATE_IDLE)
+        {
+            uart_log_write("ERR,PYRO_BUSY");
+            return;
+        }
+
+        pyro_fire_requested = true;
+        uart_log_write("ACK,PYRO_ARMED");
+        return;
+    }
+
     uart_log_write("ERR,READ_ONLY_SS_TWR");
 }
 
@@ -212,6 +454,7 @@ int ss_twr_responder_custom(void)
     uart_log_init();
     uart_log_write("UWB RANGING RESP v1.0");
     uart_log_write("ROLE,RESPONDER");
+    buzzer_boot_beep();
 
     port_set_dw_ic_spi_fastrate();
 
@@ -262,13 +505,41 @@ int ss_twr_responder_custom(void)
 
     accel_ok = accel_init();
     if (accel_ok) {
-        test_run_info((unsigned char *)"ACCEL OK (LIS2DH12)");
+        test_run_info((unsigned char *)"ACCEL OK (BMI323 SPI)");
     } else {
-        test_run_info((unsigned char *)"ACCEL FAIL");
+        test_run_info((unsigned char *)"ACCEL FAIL (BMI323 SPI)");
+    }
+    buzzer_accel_diag(accel_ok);
+
+    {
+        accel_diag_t diag;
+        char diag_msg[144];
+
+        if (accel_get_diag(&diag))
+        {
+            snprintf(diag_msg, sizeof(diag_msg),
+                     "ACCEL DIAG chip=0x%04X err=0x%04X flag=0x%02X idx=%u mode=%u%u bb=%u rx=%02X,%02X,%02X,%02X,%02X ok=%u",
+                     (unsigned int)diag.chip_id_reg,
+                     (unsigned int)diag.err_reg,
+                     (unsigned int)diag.read_addr_flag,
+                     (unsigned int)diag.read_data_lsb_idx,
+                     (unsigned int)diag.spi_cpol,
+                     (unsigned int)diag.spi_cpha,
+                     (unsigned int)(diag.bitbang ? 1u : 0u),
+                     (unsigned int)diag.probe_rx[0],
+                     (unsigned int)diag.probe_rx[1],
+                     (unsigned int)diag.probe_rx[2],
+                     (unsigned int)diag.probe_rx[3],
+                     (unsigned int)diag.probe_rx[4],
+                     (unsigned int)(diag.probe_ok ? 1u : 0u));
+            test_run_info((unsigned char *)diag_msg);
+            uart_log_write(diag_msg);
+        }
     }
 
     NRF_RTC2->PRESCALER = 0;
     NRF_RTC2->TASKS_START = 1;
+    pyro_trigger_init();
 
     test_run_info((unsigned char *)"# ms,sample,dist,iax,iay,iaz,rax,ray,raz,resp_acq_ms,init_acq_ms,resp_profile_opt,init_profile_opt");
     uart_log_write("# ms,sample,dist,iax,iay,iaz,rax,ray,raz,resp_acq_ms,init_acq_ms,resp_profile_opt,init_profile_opt");
@@ -276,6 +547,7 @@ int ss_twr_responder_custom(void)
     while (1)
     {
         process_app_commands();
+        pyro_trigger_process();
 
         dwt_setpreambledetecttimeout(0);
         dwt_setrxtimeout(0);
@@ -284,6 +556,7 @@ int ss_twr_responder_custom(void)
         do
         {
             process_app_commands();
+            pyro_trigger_process();
             status_reg = dwt_readsysstatuslo();
         } while ((status_reg & (DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR)) == 0u);
 
@@ -324,6 +597,14 @@ int ss_twr_responder_custom(void)
                 if (frame_len > POLL_MSG_TEST_PROFILE_IDX)
                 {
                     last_initiator_test_profile = rx_buffer[POLL_MSG_TEST_PROFILE_IDX];
+                }
+                if ((frame_len > POLL_MSG_FIRE_IDX) && (rx_buffer[POLL_MSG_FIRE_IDX] != 0u))
+                {
+                    if ((pyro_state == PYRO_STATE_IDLE) && !pyro_fire_requested)
+                    {
+                        pyro_fire_requested = true;
+                        uart_log_write("ACK,PYRO_REMOTE_ARMED");
+                    }
                 }
                 if (is_supported_acq_period(last_initiator_acq_period_ms))
                 {

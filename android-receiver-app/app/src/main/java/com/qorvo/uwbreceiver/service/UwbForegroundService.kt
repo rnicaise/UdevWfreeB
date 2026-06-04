@@ -192,6 +192,15 @@ class UwbForegroundService : Service() {
 
             ACTION_START_RECORDING -> startRecordingInternal()
             ACTION_STOP_RECORDING -> stopRecordingInternal()
+            ACTION_FIRE -> {
+                serviceScope.launch {
+                    val ok = sendCommandSlowly("PYRO,FIRE\n")
+                    RuntimeStore.setLinkState(
+                        RuntimeStore.state.value.linkState,
+                        if (ok) "FIRE command sent" else "FIRE send failed",
+                    )
+                }
+            }
         }
 
         return START_STICKY
@@ -657,6 +666,7 @@ class UwbForegroundService : Service() {
         const val ACTION_DISCONNECT = "com.qorvo.uwbreceiver.action.DISCONNECT"
         const val ACTION_START_RECORDING = "com.qorvo.uwbreceiver.action.START_RECORDING"
         const val ACTION_STOP_RECORDING = "com.qorvo.uwbreceiver.action.STOP_RECORDING"
+        const val ACTION_FIRE = "com.qorvo.uwbreceiver.action.FIRE"
 
         private const val ACTION_USB_PERMISSION = "com.qorvo.uwbreceiver.action.USB_PERMISSION"
     }

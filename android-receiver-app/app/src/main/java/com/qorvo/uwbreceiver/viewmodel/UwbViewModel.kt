@@ -73,6 +73,10 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
         sendServiceAction(UwbForegroundService.ACTION_STOP_RECORDING)
     }
 
+    fun fire() {
+        sendServiceAction(UwbForegroundService.ACTION_FIRE)
+    }
+
     fun updateGreenMax(value: Float) {
         viewModelScope.launch {
             settingsStore.updateGreenMax(value)

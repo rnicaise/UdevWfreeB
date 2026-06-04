@@ -42,6 +42,7 @@ fun UwbMainScreen(
     state: UwbUiState,
     onConnect: () -> Unit,
     onDisconnect: () -> Unit,
+    onFire: () -> Unit,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
     onShare: () -> Unit,
@@ -56,7 +57,6 @@ fun UwbMainScreen(
     val distance = state.runtime.displayDist ?: rawDistance
     val transmission = state.runtime.transmissionQuality
     val distanceColor = when {
-        distance <= state.thresholds.greenMax -> GreenGood
         distance <= state.thresholds.orangeMax -> OrangeWarn
         else -> RedAlert
     }
@@ -218,6 +218,15 @@ fun UwbMainScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = onConnect, modifier = Modifier.weight(1f)) { Text("Connect") }
                     Button(onClick = onDisconnect, modifier = Modifier.weight(1f)) { Text("Disconnect") }
+                }
+                Button(
+                    onClick = onFire,
+                    enabled = state.runtime.linkState == LinkState.CONNECTED &&
+                        (state.runtime.connectedRole == ConnectedUwbRole.RESPONDER ||
+                            state.runtime.connectedRole == ConnectedUwbRole.INITIATOR),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("FIRE")
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
