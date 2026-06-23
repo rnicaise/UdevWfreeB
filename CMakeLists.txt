@@ -77,6 +77,7 @@ set(FLASH_SIZE 0x00080000 CACHE STRING "Flash size" FORCE)   # 512KB
 set(RAM_SIZE   0x00020000 CACHE STRING "Ram size" FORCE)      # 128KB
 
 option(UWB_DFU_APP_LAYOUT "Build application for Nordic Secure DFU bootloader layout" OFF)
+option(UWB_BLE_ADV_ENABLED "Broadcast initiator distance in BLE advertising packets without SoftDevice" OFF)
 set(UWB_DFU_APP_FLASH_ADDR 0x00001000 CACHE STRING "Application flash start when Nordic MBR/bootloader is installed")
 set(UWB_DFU_BOOTLOADER_START 0x00078000 CACHE STRING "Reserved bootloader start address for nRF52833 Secure DFU")
 
@@ -206,6 +207,15 @@ elseif(UWB_ROLE STREQUAL "responder")
     )
 endif()
 
+if(UWB_BLE_ADV_ENABLED)
+    if(NOT UWB_ROLE STREQUAL "initiator")
+        message(FATAL_ERROR "UWB_BLE_ADV_ENABLED is currently supported only for initiator builds")
+    endif()
+    list(APPEND PROJECT_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/ble/ble_adv.c
+    )
+endif()
+
 # Custom application entrypoint.
 list(APPEND PROJECT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/main.c
@@ -218,6 +228,7 @@ set(INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/src/accel
     ${CMAKE_SOURCE_DIR}/src/uart
+    ${CMAKE_SOURCE_DIR}/src/ble
 
     # SDK platform
     ${PLATFORM_PATH}/Source/config
@@ -289,6 +300,7 @@ target_compile_definitions(${TARGET_ELF} PRIVATE
     $<$<STREQUAL:${UWB_ACCEL_TARGET},legacy>:UWB_ACCEL_TARGET_LEGACY>
     $<$<STREQUAL:${UWB_ACCEL_TARGET},gena>:UWB_ACCEL_TARGET_GENA>
     $<$<STREQUAL:${UWB_ACCEL_TARGET},auto>:UWB_ACCEL_TARGET_AUTO>
+    $<$<BOOL:${UWB_BLE_ADV_ENABLED}>:UWB_BLE_ADV_ENABLED>
 )
 
 target_link_options(${TARGET_ELF} PRIVATE

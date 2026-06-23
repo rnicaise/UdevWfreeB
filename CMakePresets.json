@@ -39,6 +39,24 @@
             }
         },
         {
+            "name": "initiator_gena_ble_adv_debug",
+            "inherits": "initiator_gena_debug",
+            "displayName": "Initiator GenA BLE Advertising (Debug)",
+            "description": "Module A GenA broadcasts smoothed distance in BLE advertising packets for nRF Connect scan tests",
+            "cacheVariables": {
+                "UWB_BLE_ADV_ENABLED": "ON"
+            }
+        },
+        {
+            "name": "initiator_gena_ble_adv_dfu_debug",
+            "inherits": "initiator_gena_ble_adv_debug",
+            "displayName": "Initiator GenA BLE Advertising DFU App (Debug)",
+            "description": "Module A GenA BLE advertising app linked for Nordic Secure DFU bootloader layout",
+            "cacheVariables": {
+                "UWB_DFU_APP_LAYOUT": "ON"
+            }
+        },
+        {
             "name": "initiator_legacy_debug",
             "inherits": "initiator_debug",
             "displayName": "Initiator Legacy LIS2DH12 (Debug)"
@@ -112,6 +130,14 @@
         {
             "name": "initiator_gena_dfu_debug",
             "configurePreset": "initiator_gena_dfu_debug"
+        },
+        {
+            "name": "initiator_gena_ble_adv_debug",
+            "configurePreset": "initiator_gena_ble_adv_debug"
+        },
+        {
+            "name": "initiator_gena_ble_adv_dfu_debug",
+            "configurePreset": "initiator_gena_ble_adv_dfu_debug"
         },
         {
             "name": "initiator_release",

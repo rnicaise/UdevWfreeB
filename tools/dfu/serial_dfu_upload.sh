@@ -63,52 +63,52 @@ cmd = [
     "--connect-delay", connect_delay_sec,
 ]
 
-  def enter_bootloader():
-    ser = serial.Serial(port, baud, timeout=0.02)
-    ser.reset_input_buffer()
+def enter_bootloader():
+  ser = serial.Serial(port, baud, timeout=0.02)
+  ser.reset_input_buffer()
 
-    raw = bytearray()
-    start = time.time()
-    next_send = 0.0
+  raw = bytearray()
+  start = time.time()
+  next_send = 0.0
 
-    while time.time() - start < 5.0:
-      now = time.time()
-      if now >= next_send:
-        ser.write(b"\nBOOT,DFU\n")
-        ser.flush()
-        next_send = now + 0.25
+  while time.time() - start < 5.0:
+    now = time.time()
+    if now >= next_send:
+      ser.write(b"\nBOOT,DFU\n")
+      ser.flush()
+      next_send = now + 0.25
 
-      chunk = ser.read(512)
-      if not chunk:
-        continue
-
-      raw.extend(chunk)
-      while b"\n" in raw:
-        line, _, raw = raw.partition(b"\n")
-        text = line.decode("ascii", "replace").strip()
-        if text == "ACK,BOOT_DFU":
-          ser.close()
-          return True
-
-    ser.close()
-    return False
-
-  last_exit = 1
-  for attempt in range(1, attempts + 1):
-    print(f"DFU attempt {attempt}/{attempts}: entering bootloader")
-    if not enter_bootloader():
-      print("BOOT,DFU was not acknowledged", file=sys.stderr)
-      time.sleep(2.0)
+    chunk = ser.read(512)
+    if not chunk:
       continue
 
-    print("BOOT,DFU acknowledged")
-    last_exit = subprocess.call(cmd)
-    if last_exit == 0:
-      sys.exit(0)
+    raw.extend(chunk)
+    while b"\n" in raw:
+      line, _, raw = raw.partition(b"\n")
+      text = line.decode("ascii", "replace").strip()
+      if text == "ACK,BOOT_DFU":
+        ser.close()
+        return True
 
-    time.sleep(4.0)
+  ser.close()
+  return False
 
-  sys.exit(last_exit)
+last_exit = 1
+for attempt in range(1, attempts + 1):
+  print(f"DFU attempt {attempt}/{attempts}: entering bootloader")
+  if not enter_bootloader():
+    print("BOOT,DFU was not acknowledged", file=sys.stderr)
+    time.sleep(2.0)
+    continue
+
+  print("BOOT,DFU acknowledged")
+  last_exit = subprocess.call(cmd)
+  if last_exit == 0:
+    sys.exit(0)
+
+  time.sleep(4.0)
+
+sys.exit(last_exit)
 PY
 else
   nrfutil nrf5sdk-tools dfu serial \

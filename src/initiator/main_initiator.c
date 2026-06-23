@@ -36,6 +36,9 @@
 #include "../accel/accel.h"
 #include "../board/pyro_buzzer.h"
 #include "../uart/uart_log.h"
+#ifdef UWB_BLE_ADV_ENABLED
+#include "../ble/ble_adv.h"
+#endif
 
 #define POLL_MSG_PROFILE_IDX      16
 #define POLL_MSG_SWITCH_TOKEN_IDX 17
@@ -53,6 +56,7 @@
 #define POLL_MSG_FIRE_COUNTDOWN   1u
 #define POLL_MSG_FIRE_IMMEDIATE   2u
 #define BOOTLOADER_DFU_START      0xB1u
+#define BLE_ADV_PERIOD_MS         100u
 
 #define RESP_MSG_CTRL_OPT_IDX   11
 #define RESP_MSG_CTRL_TOKEN_IDX 12
@@ -165,6 +169,9 @@ static uint8_t fire_request_code = POLL_MSG_FIRE_NONE;
 static uint8_t current_tx_power_level = UWB_TX_POWER_LEVEL_DEFAULT;
 
 static const uwb_runtime_profile_t *active_profile = NULL;
+#ifdef UWB_BLE_ADV_ENABLED
+static uint32_t ble_adv_last_ms = 0u;
+#endif
 static char output_buf[320];
 static char cmd_buf[96];
 
@@ -801,6 +808,11 @@ int ss_twr_initiator_custom(void)
     NRF_RTC2->PRESCALER = 0;
     NRF_RTC2->TASKS_START = 1;
 
+#ifdef UWB_BLE_ADV_ENABLED
+    ble_adv_init();
+    uart_log_write("BLE_ADV,READY");
+#endif
+
     /* -- 5. Ranging loop -- */
     while (1)
     {
@@ -1048,6 +1060,15 @@ int ss_twr_initiator_custom(void)
                                                &accel_data, responder_accel, &gyro_data, responder_gyro,
                                                valid, dist_filt, dist_smooth,
                                                responder_load_mv, responder_load_connected);
+
+#ifdef UWB_BLE_ADV_ENABLED
+                            if ((uint32_t)(ms - ble_adv_last_ms) >= BLE_ADV_PERIOD_MS)
+                            {
+                                ble_adv_last_ms = ms;
+                                ble_adv_update(dist_smooth, ranging_count);
+                                ble_adv_send();
+                            }
+#endif
                         }
 
                         if (switch_request_armed && (pending_switch_token != 0u) && (tx_poll_msg[POLL_MSG_SWITCH_TOKEN_IDX] == pending_switch_token))
