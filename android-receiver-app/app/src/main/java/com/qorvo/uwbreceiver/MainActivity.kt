@@ -31,6 +31,9 @@ class MainActivity : ComponentActivity() {
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.ACCESS_FINE_LOCATION,
         )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -44,6 +47,7 @@ class MainActivity : ComponentActivity() {
                 UwbMainScreen(
                     state = uiState,
                     onConnect = viewModel::connect,
+                    onStartBleScan = viewModel::startBleScan,
                     onDisconnect = viewModel::disconnect,
                     onFire = viewModel::fire,
                     onArmDistance2m = viewModel::armDistance2m,

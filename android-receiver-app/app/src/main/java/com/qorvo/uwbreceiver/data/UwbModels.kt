@@ -43,6 +43,12 @@ enum class LinkState {
     CONNECTED,
 }
 
+enum class LinkSource {
+    NONE,
+    USB,
+    BLE_ADV,
+}
+
 enum class ConnectedUwbRole {
     UNKNOWN,
     INITIATOR,
@@ -86,6 +92,7 @@ data class TransmissionQuality(
 
 data class RuntimeState(
     val linkState: LinkState = LinkState.DISCONNECTED,
+    val linkSource: LinkSource = LinkSource.NONE,
     val status: String = "Idle",
     val connectedRole: ConnectedUwbRole = ConnectedUwbRole.UNKNOWN,
     val latest: CsvSample? = null,

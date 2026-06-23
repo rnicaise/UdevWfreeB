@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.qorvo.uwbreceiver.data.ConnectedUwbRole
 import com.qorvo.uwbreceiver.data.CsvSample
 import com.qorvo.uwbreceiver.data.LinkState
+import com.qorvo.uwbreceiver.data.LinkSource
 import com.qorvo.uwbreceiver.data.SafetyArmMode
 import com.qorvo.uwbreceiver.data.SignalQualityCalculator
 import com.qorvo.uwbreceiver.data.UwbUiState
@@ -54,6 +55,7 @@ import com.qorvo.uwbreceiver.ui.theme.TextSecondary
 fun UwbMainScreen(
     state: UwbUiState,
     onConnect: () -> Unit,
+    onStartBleScan: () -> Unit,
     onDisconnect: () -> Unit,
     onFire: () -> Unit,
     onArmDistance2m: () -> Unit,
@@ -77,11 +79,15 @@ fun UwbMainScreen(
         else -> RedAlert
     }
     val signal = SignalQualityCalculator.fromSample(sample)
-    val roleSubtitle = when (state.runtime.connectedRole) {
-        ConnectedUwbRole.INITIATOR -> "Initiator detecte · SS-TWR actif"
-        ConnectedUwbRole.RESPONDER -> "Responder detecte · SS-TWR responder"
-        ConnectedUwbRole.UNKNOWN -> "Connecte un boitier; l'app detecte automatiquement son role"
+    val roleSubtitle = when (state.runtime.linkSource) {
+        LinkSource.BLE_ADV -> "BLE scan actif · distance broadcast UWB"
+        else -> when (state.runtime.connectedRole) {
+            ConnectedUwbRole.INITIATOR -> "Initiator detecte · SS-TWR actif"
+            ConnectedUwbRole.RESPONDER -> "Responder detecte · SS-TWR responder"
+            ConnectedUwbRole.UNKNOWN -> "Connecte un boitier; l'app detecte automatiquement son role"
+        }
     }
+    val usbControlsEnabled = state.runtime.linkState == LinkState.CONNECTED && state.runtime.linkSource == LinkSource.USB
 
     LazyColumn(
         modifier = Modifier
@@ -195,7 +201,8 @@ fun UwbMainScreen(
                 StatRow("Armed trigger", safetyArmModeLabel(state.runtime.safetyArmMode))
                 StatRow("Armed status", state.runtime.safetyArmStatus)
                 StatRow("Connected role", state.runtime.connectedRole.name)
-                StatRow("Mode", "SS-TWR")
+                StatRow("Link source", linkSourceLabel(state.runtime.linkSource))
+                StatRow("Mode", if (state.runtime.linkSource == LinkSource.BLE_ADV) "BLE advertising" else "SS-TWR")
                 StatRow("RF profile", "Channel 5 / 6.8 Mbps")
                 StatRow("Acquisition period", "1 ms target")
                 StatRow("Real Hz", String.format("%.1f", state.runtime.hz))
@@ -256,12 +263,13 @@ fun UwbMainScreen(
             CardBlock {
                 Text("Controls", fontWeight = FontWeight.Bold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onConnect, modifier = Modifier.weight(1f)) { Text("Connect") }
+                    Button(onClick = onConnect, modifier = Modifier.weight(1f)) { Text("USB") }
+                    Button(onClick = onStartBleScan, modifier = Modifier.weight(1f)) { Text("BLE") }
                     Button(onClick = onDisconnect, modifier = Modifier.weight(1f)) { Text("Disconnect") }
                 }
                 FireButton(
                     onClick = onFire,
-                    enabled = state.runtime.linkState == LinkState.CONNECTED &&
+                    enabled = usbControlsEnabled &&
                         (state.runtime.connectedRole == ConnectedUwbRole.INITIATOR ||
                             state.runtime.connectedRole == ConnectedUwbRole.RESPONDER),
                     armed = state.runtime.safetyArmMode != SafetyArmMode.DISARMED,
@@ -269,12 +277,12 @@ fun UwbMainScreen(
                 )
                 Button(
                     onClick = onArmDistance2m,
-                    enabled = state.runtime.linkState == LinkState.CONNECTED,
+                    enabled = usbControlsEnabled,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Armer distance 2 m") }
                 Button(
                     onClick = onArmTilt50deg,
-                    enabled = state.runtime.linkState == LinkState.CONNECTED && sample != null,
+                    enabled = usbControlsEnabled && sample != null,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Armer inclinaison 50°") }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -366,7 +374,7 @@ private fun StatusBadges(state: UwbUiState) {
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        StateBadge("USB", state.runtime.linkState.name, linkColor)
+        StateBadge(linkSourceLabel(state.runtime.linkSource), state.runtime.linkState.name, linkColor)
         StateBadge("Role", roleLabel(state.runtime.connectedRole), roleColor)
         StateBadge("Rec", if (state.runtime.recording) "ON" else "OFF", if (state.runtime.recording) OrangeWarn else TextSecondary)
         StateBadge("Arm", safetyArmModeLabel(state.runtime.safetyArmMode), armedColor)
@@ -609,6 +617,14 @@ private fun roleLabel(role: ConnectedUwbRole): String {
         ConnectedUwbRole.UNKNOWN -> "AUTO"
         ConnectedUwbRole.INITIATOR -> "INIT"
         ConnectedUwbRole.RESPONDER -> "RESP"
+    }
+}
+
+private fun linkSourceLabel(source: LinkSource): String {
+    return when (source) {
+        LinkSource.NONE -> "Link"
+        LinkSource.USB -> "USB"
+        LinkSource.BLE_ADV -> "BLE"
     }
 }
 

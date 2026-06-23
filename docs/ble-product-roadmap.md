@@ -34,6 +34,18 @@ Test with nRF Connect:
 
 This is intentionally not connectable. It proves phone visibility and RF coexistence before moving the firmware onto a SoftDevice memory layout.
 
+## Android app scan mode
+
+The Android receiver app has a `BLE` control next to the USB control. It scans for the `UWB` advertiser and decodes manufacturer data `0xFFFF` directly into the normal distance pipeline.
+
+Decoded packet fields:
+
+- byte 0-1: signed distance in centimeters, little-endian
+- byte 2-3: unsigned sample counter, little-endian
+- scan RSSI is shown as the radio RSSI field
+
+This mode is monitor-only. Commands such as FIRE and arming remain USB-only until the product firmware exposes a connectable GATT control plane.
+
 ## Product direction: connectable GATT
 
 The clean product path should use Nordic SoftDevice S113 or S132 and expose a custom `UWB Ranging` GATT service. The first useful service can publish a notification characteristic at 10-20 Hz with:

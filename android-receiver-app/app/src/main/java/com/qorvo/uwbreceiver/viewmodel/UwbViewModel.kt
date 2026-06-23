@@ -61,6 +61,10 @@ class UwbViewModel(app: Application) : AndroidViewModel(app) {
         sendServiceAction(UwbForegroundService.ACTION_CONNECT)
     }
 
+    fun startBleScan() {
+        sendServiceAction(UwbForegroundService.ACTION_START_BLE_SCAN)
+    }
+
     fun disconnect() {
         sendServiceAction(UwbForegroundService.ACTION_DISCONNECT)
     }

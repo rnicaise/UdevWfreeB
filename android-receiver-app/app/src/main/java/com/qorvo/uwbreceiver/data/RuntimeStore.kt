@@ -42,10 +42,11 @@ object RuntimeStore {
     private val liveValidRateWindow = ArrayDeque<Float>()
 
     @Synchronized
-    fun setLinkState(linkState: LinkState, status: String) {
+    fun setLinkState(linkState: LinkState, status: String, linkSource: LinkSource? = null) {
         val current = _state.value
         _state.value = current.copy(
             linkState = linkState,
+            linkSource = linkSource ?: if (linkState == LinkState.DISCONNECTED) LinkSource.NONE else current.linkSource,
             status = status,
             connectedRole = if (linkState == LinkState.CONNECTED) current.connectedRole else ConnectedUwbRole.UNKNOWN,
         )
@@ -57,7 +58,7 @@ object RuntimeStore {
     }
 
     @Synchronized
-    fun onConnected(status: String = "Connected") {
+    fun onConnected(status: String = "Connected", linkSource: LinkSource = LinkSource.USB) {
         val now = SystemClock.elapsedRealtime()
         val current = _state.value
         hzWindowStartElapsed = now
@@ -65,6 +66,7 @@ object RuntimeStore {
         resetLiveTransmissionQuality()
         _state.value = current.copy(
             linkState = LinkState.CONNECTED,
+            linkSource = linkSource,
             status = status,
             connectedRole = ConnectedUwbRole.UNKNOWN,
             sessionStartElapsedMs = current.sessionStartElapsedMs ?: now,

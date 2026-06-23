@@ -1,10 +1,16 @@
 package com.qorvo.uwbreceiver.service
 
+import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothManager
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -36,6 +42,7 @@ import com.qorvo.uwbreceiver.data.CsvParser
 import com.qorvo.uwbreceiver.data.CsvSample
 import com.qorvo.uwbreceiver.data.ExperimentSettings
 import com.qorvo.uwbreceiver.data.LinkState
+import com.qorvo.uwbreceiver.data.LinkSource
 import com.qorvo.uwbreceiver.data.PhoneTelemetry
 import com.qorvo.uwbreceiver.data.RecordingManager
 import com.qorvo.uwbreceiver.data.RuntimeStore
@@ -77,6 +84,10 @@ class UwbForegroundService : Service() {
 
     private var activeDriver: UsbSerialDriver? = null
     private var activePort: UsbSerialPort? = null
+    private var bleScanCallback: ScanCallback? = null
+    private var bleSampleCounterEpoch = 0L
+    private var bleLastCounter16: Int? = null
+    private var bleLastStatusElapsedMs = 0L
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var toneGenerator: ToneGenerator? = null
@@ -184,17 +195,21 @@ class UwbForegroundService : Service() {
         when (intent?.action) {
             ACTION_CONNECT -> {
                 shouldConnect = true
+                closeBleScan()
                 RuntimeStore.setLinkState(LinkState.CONNECTING, "Connecting")
                 if (connectJob?.isActive != true) {
                     connectJob = serviceScope.launch { connectLoop() }
                 }
             }
 
+            ACTION_START_BLE_SCAN -> startBleScan()
+
             ACTION_DISCONNECT -> {
                 shouldConnect = false
                 stopRecordingInternal()
                 disarmSafetyTrigger("Disconnected")
                 closePort()
+                closeBleScan()
                 RuntimeStore.setLinkState(LinkState.DISCONNECTED, "Disconnected")
                 stopSelf()
             }
@@ -223,6 +238,7 @@ class UwbForegroundService : Service() {
         stopRecordingInternal()
         disarmSafetyTrigger("Service stopped")
         closePort()
+        closeBleScan()
 
         connectJob?.cancel()
         readJob?.cancel()
@@ -552,6 +568,143 @@ class UwbForegroundService : Service() {
         connectedRole = ConnectedUwbRole.UNKNOWN
     }
 
+    @SuppressLint("MissingPermission")
+    private fun startBleScan() {
+        shouldConnect = false
+        closePort()
+        disarmSafetyTrigger("BLE scan")
+
+        if (!hasBleScanPermission()) {
+            RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE scan permission missing")
+            return
+        }
+
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val adapter = bluetoothManager.adapter
+        if (adapter == null || !adapter.isEnabled) {
+            RuntimeStore.setLinkState(LinkState.DISCONNECTED, "Bluetooth disabled")
+            return
+        }
+
+        val scanner = adapter.bluetoothLeScanner
+        if (scanner == null) {
+            RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE scanner unavailable")
+            return
+        }
+
+        closeBleScan()
+        bleSampleCounterEpoch = 0L
+        bleLastCounter16 = null
+        bleLastStatusElapsedMs = 0L
+        connectedRole = ConnectedUwbRole.INITIATOR
+
+        RuntimeStore.onConnected("BLE scan listening for UWB", LinkSource.BLE_ADV)
+        RuntimeStore.setConnectedRole(ConnectedUwbRole.INITIATOR)
+
+        val callback = object : ScanCallback() {
+            override fun onScanResult(callbackType: Int, result: ScanResult) {
+                consumeBleScanResult(result)
+            }
+
+            override fun onBatchScanResults(results: MutableList<ScanResult>) {
+                results.forEach { consumeBleScanResult(it) }
+            }
+
+            override fun onScanFailed(errorCode: Int) {
+                RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE scan failed: $errorCode")
+                closeBleScan()
+            }
+        }
+        val settings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
+            .build()
+
+        bleScanCallback = callback
+        scanner.startScan(null, settings, callback)
+        RuntimeStore.setLinkState(LinkState.CONNECTED, "BLE scan active", LinkSource.BLE_ADV)
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun closeBleScan() {
+        val callback = bleScanCallback ?: return
+        bleScanCallback = null
+        try {
+            val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+            bluetoothManager.adapter?.bluetoothLeScanner?.stopScan(callback)
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun consumeBleScanResult(result: ScanResult) {
+        val record = result.scanRecord ?: return
+        val manufacturerData = record.getManufacturerSpecificData(BLE_DEVELOPMENT_COMPANY_ID) ?: return
+        if (manufacturerData.size < 4) {
+            return
+        }
+
+        val deviceName = record.deviceName
+        if (deviceName != null && deviceName != BLE_DEVICE_NAME) {
+            return
+        }
+
+        val distanceCm = ((manufacturerData[0].toInt() and 0xFF) or (manufacturerData[1].toInt() shl 8)).toShort().toInt()
+        val counter16 = (manufacturerData[2].toInt() and 0xFF) or ((manufacturerData[3].toInt() and 0xFF) shl 8)
+        val sampleCounter = unwrapBleCounter(counter16)
+        val distanceM = distanceCm / 100f
+        if (!distanceM.isFinite() || distanceM < -5f || distanceM > 30f) {
+            return
+        }
+
+        val nowElapsed = android.os.SystemClock.elapsedRealtime()
+        val sessionStart = RuntimeStore.state.value.sessionStartElapsedMs ?: nowElapsed
+        val sample = CsvSample(
+            ms = nowElapsed - sessionStart,
+            sample = sampleCounter,
+            dist = distanceM,
+            iax = 0,
+            iay = 0,
+            iaz = 0,
+            rax = 0,
+            ray = 0,
+            raz = 0,
+            rxPowerDbm = result.rssi.toFloat(),
+            signalQuality10 = rssiQuality10(result.rssi),
+            firmwareValid = true,
+            firmwareDistFilt = distanceM,
+            firmwareDistSmooth = distanceM,
+        )
+        val phoneTelemetry = snapshotPhoneTelemetry()
+
+        RuntimeStore.onSample(sample, distanceM, phoneTelemetry)
+        recordingManager.appendEnrichedSample(
+            sample,
+            distanceM,
+            phoneTelemetry,
+            RuntimeStore.state.value.transmissionQuality,
+            UwbControlSettings(acquisitionPeriodMs = BLE_ADV_PERIOD_MS.toInt()),
+            currentExperiment,
+            ConnectedUwbRole.INITIATOR,
+        )
+
+        if (nowElapsed - bleLastStatusElapsedMs >= BLE_STATUS_INTERVAL_MS) {
+            bleLastStatusElapsedMs = nowElapsed
+            RuntimeStore.setLinkState(LinkState.CONNECTED, "BLE UWB ${String.format("%.2f", distanceM)} m", LinkSource.BLE_ADV)
+        }
+    }
+
+    private fun unwrapBleCounter(counter16: Int): Long {
+        val previous = bleLastCounter16
+        if (previous != null && counter16 + BLE_COUNTER_WRAP_HALF < previous) {
+            bleSampleCounterEpoch += BLE_COUNTER_WRAP
+        }
+        bleLastCounter16 = counter16
+        return bleSampleCounterEpoch + counter16.toLong()
+    }
+
+    private fun rssiQuality10(rssi: Int): Float {
+        return ((rssi + 100).toFloat() / 5f).coerceIn(1f, 10f)
+    }
+
     private fun armDistanceTrigger() {
         safetyArmMode = SafetyArmMode.DISTANCE_2M
         tiltBaseline = null
@@ -694,6 +847,14 @@ class UwbForegroundService : Service() {
         return fine || coarse
     }
 
+    private fun hasBleScanPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_SCAN) == PackageManager.PERMISSION_GRANTED
+        } else {
+            hasLocationPermission()
+        }
+    }
+
     private fun registerUsbReceiver() {
         val filter = IntentFilter().apply {
             addAction(ACTION_USB_PERMISSION)
@@ -774,12 +935,19 @@ class UwbForegroundService : Service() {
         private const val TRIGGER_BEEP_DURATION_MS = 500
         private const val RAD_TO_DEG = 57.29578f
         private const val SERIAL_BAUD_RATE = 460800
+        private const val BLE_DEVICE_NAME = "UWB"
+        private const val BLE_DEVELOPMENT_COMPANY_ID = 0xFFFF
+        private const val BLE_ADV_PERIOD_MS = 100L
+        private const val BLE_STATUS_INTERVAL_MS = 1_000L
+        private const val BLE_COUNTER_WRAP = 65_536L
+        private const val BLE_COUNTER_WRAP_HALF = 32_768
         private const val MAX_ACCUMULATED_SERIAL_CHARS = 65536
         private const val UI_PUSH_INTERVAL_MS = 50L
         private const val PLAUSIBILITY_RESYNC_REJECTS = 50
         private const val COMMAND_BYTE_DELAY_MS = 15L
 
         const val ACTION_CONNECT = "com.qorvo.uwbreceiver.action.CONNECT"
+        const val ACTION_START_BLE_SCAN = "com.qorvo.uwbreceiver.action.START_BLE_SCAN"
         const val ACTION_DISCONNECT = "com.qorvo.uwbreceiver.action.DISCONNECT"
         const val ACTION_START_RECORDING = "com.qorvo.uwbreceiver.action.START_RECORDING"
         const val ACTION_STOP_RECORDING = "com.qorvo.uwbreceiver.action.STOP_RECORDING"
