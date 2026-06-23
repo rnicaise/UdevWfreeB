@@ -35,6 +35,7 @@
 
 #define POLL_MSG_FIRE_COUNTDOWN   1u
 #define POLL_MSG_FIRE_IMMEDIATE   2u
+#define BOOTLOADER_DFU_START      0xB1u
 
 #define RESP_MSG_CTRL_OPT_IDX         11
 #define RESP_MSG_CTRL_TOKEN_IDX       12
@@ -500,6 +501,15 @@ static void process_app_commands(void)
 
 static void handle_app_command(const char *cmd)
 {
+    if (strcmp(cmd, "BOOT,DFU") == 0)
+    {
+        uart_log_write("ACK,BOOT_DFU");
+        uart_log_flush();
+        NRF_POWER->GPREGRET = (uint32_t)BOOTLOADER_DFU_START;
+        NVIC_SystemReset();
+        return;
+    }
+
     if ((strcmp(cmd, "CFG,GET_ROLE") == 0) || (strcmp(cmd, "INFO?") == 0))
     {
         uart_log_write("ROLE,RESPONDER");

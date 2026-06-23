@@ -211,6 +211,11 @@ void uart_log_write(const char *str)
     }
 }
 
+void uart_log_flush(void)
+{
+    uart_wait_tx_done();
+}
+
 void uart_log_poll_rx(void)
 {
     uint32_t guard = 0;

@@ -30,6 +30,15 @@
             }
         },
         {
+            "name": "initiator_gena_dfu_debug",
+            "inherits": "initiator_gena_debug",
+            "displayName": "Initiator GenA BMI323 DFU App (Debug)",
+            "description": "Module A GenA linked for Nordic Secure DFU bootloader layout",
+            "cacheVariables": {
+                "UWB_DFU_APP_LAYOUT": "ON"
+            }
+        },
+        {
             "name": "initiator_legacy_debug",
             "inherits": "initiator_debug",
             "displayName": "Initiator Legacy LIS2DH12 (Debug)"
@@ -65,6 +74,15 @@
             }
         },
         {
+            "name": "responder_gena_dfu_debug",
+            "inherits": "responder_gena_debug",
+            "displayName": "Responder GenA BMI323 DFU App (Debug)",
+            "description": "Module B GenA linked for Nordic Secure DFU bootloader layout",
+            "cacheVariables": {
+                "UWB_DFU_APP_LAYOUT": "ON"
+            }
+        },
+        {
             "name": "responder_legacy_debug",
             "inherits": "responder_debug",
             "displayName": "Responder Legacy LIS2DH12 (Debug)"
@@ -92,6 +110,10 @@
             "configurePreset": "initiator_gena_debug"
         },
         {
+            "name": "initiator_gena_dfu_debug",
+            "configurePreset": "initiator_gena_dfu_debug"
+        },
+        {
             "name": "initiator_release",
             "configurePreset": "initiator_release"
         },
@@ -106,6 +128,10 @@
         {
             "name": "responder_gena_debug",
             "configurePreset": "responder_gena_debug"
+        },
+        {
+            "name": "responder_gena_dfu_debug",
+            "configurePreset": "responder_gena_dfu_debug"
         },
         {
             "name": "responder_release",

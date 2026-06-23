@@ -76,9 +76,20 @@ endif()
 set(FLASH_SIZE 0x00080000 CACHE STRING "Flash size" FORCE)   # 512KB
 set(RAM_SIZE   0x00020000 CACHE STRING "Ram size" FORCE)      # 128KB
 
+option(UWB_DFU_APP_LAYOUT "Build application for Nordic Secure DFU bootloader layout" OFF)
+set(UWB_DFU_APP_FLASH_ADDR 0x00001000 CACHE STRING "Application flash start when Nordic MBR/bootloader is installed")
+set(UWB_DFU_BOOTLOADER_START 0x00078000 CACHE STRING "Reserved bootloader start address for nRF52833 Secure DFU")
+
 # Include SDK CMake helpers.
 include("${QORVO_SDK_PATH}/cmake/config.cmake")
 include("${QORVO_SDK_PATH}/cmake/util.cmake")
+
+if(UWB_DFU_APP_LAYOUT)
+    math(EXPR UWB_DFU_APP_FLASH_SIZE "${UWB_DFU_BOOTLOADER_START} - ${UWB_DFU_APP_FLASH_ADDR}" OUTPUT_FORMAT HEXADECIMAL)
+    set(FLASH_ADDR ${UWB_DFU_APP_FLASH_ADDR} CACHE STRING "Flash start address" FORCE)
+    set(FLASH_SIZE ${UWB_DFU_APP_FLASH_SIZE} CACHE STRING "Flash size" FORCE)
+    message("DFU app layout: FLASH_ADDR=${FLASH_ADDR}, FLASH_SIZE=${FLASH_SIZE}, BOOTLOADER_START=${UWB_DFU_BOOTLOADER_START}")
+endif()
 
 # SDK paths.
 set(UWB_DRIVER_PATH "${QORVO_SDK_PATH}/API/Shared/dwt_uwb_driver")

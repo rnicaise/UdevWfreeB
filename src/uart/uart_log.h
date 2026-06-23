@@ -10,6 +10,9 @@ void uart_log_init(void);
 /* Send a null-terminated string + \r\n over UART */
 void uart_log_write(const char *str);
 
+/* Wait for the current UART TX DMA transfer to complete. */
+void uart_log_flush(void);
+
 /* Poll RX state machine (non-blocking) and assemble a line command. */
 void uart_log_poll_rx(void);
 
