@@ -145,8 +145,52 @@ SECTIONS
 
   . = ASSERT(__text_start__ == __text_end__ || (__text_end__ - __FLASH_segment_start__) <= __FLASH_segment_size__ , "error: .text is too large to fit in FLASH memory segment");
 
-  __log_const_data_load_start__ = ALIGN(__text_end__ , 4);
-  .log_const_data ALIGN(__text_end__ , 4) : AT(ALIGN(__text_end__ , 4))
+  __sdh_sections_load_start__ = ALIGN(__text_end__ , 4);
+  .sdh_soc_observers ALIGN(__text_end__ , 4) : AT(ALIGN(__text_end__ , 4))
+  {
+    PROVIDE(__start_sdh_soc_observers = .);
+    KEEP(*(SORT(.sdh_soc_observers*)))
+    PROVIDE(__stop_sdh_soc_observers = .);
+  } > FLASH
+  __sdh_soc_observers_end__ = .;
+
+  .sdh_ble_observers ALIGN(__sdh_soc_observers_end__ , 4) : AT(ALIGN(__sdh_soc_observers_end__ , 4))
+  {
+    PROVIDE(__start_sdh_ble_observers = .);
+    KEEP(*(SORT(.sdh_ble_observers*)))
+    PROVIDE(__stop_sdh_ble_observers = .);
+  } > FLASH
+  __sdh_ble_observers_end__ = .;
+
+  .sdh_req_observers ALIGN(__sdh_ble_observers_end__ , 4) : AT(ALIGN(__sdh_ble_observers_end__ , 4))
+  {
+    PROVIDE(__start_sdh_req_observers = .);
+    KEEP(*(SORT(.sdh_req_observers*)))
+    PROVIDE(__stop_sdh_req_observers = .);
+  } > FLASH
+  __sdh_req_observers_end__ = .;
+
+  .sdh_state_observers ALIGN(__sdh_req_observers_end__ , 4) : AT(ALIGN(__sdh_req_observers_end__ , 4))
+  {
+    PROVIDE(__start_sdh_state_observers = .);
+    KEEP(*(SORT(.sdh_state_observers*)))
+    PROVIDE(__stop_sdh_state_observers = .);
+  } > FLASH
+  __sdh_state_observers_end__ = .;
+
+  .sdh_stack_observers ALIGN(__sdh_state_observers_end__ , 4) : AT(ALIGN(__sdh_state_observers_end__ , 4))
+  {
+    PROVIDE(__start_sdh_stack_observers = .);
+    KEEP(*(SORT(.sdh_stack_observers*)))
+    PROVIDE(__stop_sdh_stack_observers = .);
+  } > FLASH
+  __sdh_stack_observers_end__ = .;
+  __sdh_sections_load_end__ = __sdh_stack_observers_end__;
+
+  . = ASSERT(__sdh_sections_load_end__ - __FLASH_segment_start__ <= __FLASH_segment_size__ , "error: SoftDevice observer sections are too large to fit in FLASH memory segment");
+
+  __log_const_data_load_start__ = ALIGN(__sdh_sections_load_end__ , 4);
+  .log_const_data ALIGN(__sdh_sections_load_end__ , 4) : AT(ALIGN(__sdh_sections_load_end__ , 4))
   {
     __log_const_data_start__ = .;
     __start_log_const_data =   __log_const_data_start__;

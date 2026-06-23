@@ -57,6 +57,144 @@
             }
         },
         {
+            "name": "initiator_gena_ble_gatt_debug",
+            "inherits": "initiator_gena_debug",
+            "displayName": "Initiator GenA BLE GATT NUS (Debug)",
+            "description": "Module A GenA exposes UART-compatible commands and telemetry over Nordic UART Service BLE GATT",
+            "cacheVariables": {
+                "UWB_BLE_GATT_ENABLED": "ON"
+            }
+        },
+        {
+            "name": "initiator_gena_ble_gatt_no_uart_rx_debug",
+            "inherits": "initiator_gena_ble_gatt_debug",
+            "displayName": "Initiator GenA BLE GATT NUS, UART RX Off (Debug)",
+            "description": "Diagnostic GATT build with UART command RX disabled",
+            "cacheVariables": {
+                "UWB_UART_RX_DISABLED": "ON"
+            }
+        },
+        {
+            "name": "initiator_gena_ble_gatt_no_uart_debug",
+            "inherits": "initiator_gena_ble_gatt_debug",
+            "displayName": "Initiator GenA BLE GATT NUS, UART Off (Debug)",
+            "description": "Diagnostic GATT build with UART RX disabled and UART TX logs dropped",
+            "cacheVariables": {
+                "UWB_UART_RX_DISABLED": "ON",
+                "UWB_UART_TX_DISABLED": "ON"
+            }
+        },
+        {
+            "name": "initiator_gena_ble_gatt_no_uart_sd_vtor_debug",
+            "inherits": "initiator_gena_ble_gatt_no_uart_debug",
+            "displayName": "Initiator GenA BLE GATT NUS, UART Off, SD VTOR (Debug)",
+            "description": "Diagnostic GATT build with UART disabled and VTOR pointed to S113 after BLE init",
+            "cacheVariables": {
+                "UWB_SOFTDEVICE_VTOR_DIRECT": "ON"
+            }
+        },
+        {
+            "name": "initiator_gena_ble_gatt_pause_debug",
+            "inherits": "initiator_gena_ble_gatt_debug",
+            "displayName": "Initiator GenA BLE GATT NUS, Pause After Ready (Debug)",
+            "description": "Diagnostic GATT build that initializes full firmware then pauses before ranging loop",
+            "cacheVariables": {
+                "UWB_BLE_GATT_PAUSE_AFTER_READY": "ON"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_debug",
+            "inherits": "initiator_gena_ble_gatt_debug",
+            "displayName": "BLE GATT NUS Standalone (Debug)",
+            "description": "Diagnostic S113/NUS app without UWB, SPI, or UART initialization",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE": "ON",
+                "UWB_UART_RX_DISABLED": "ON",
+                "UWB_UART_TX_DISABLED": "ON"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_gpio_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + GPIO Init (Debug)",
+            "description": "Standalone BLE diagnostic with Qorvo gpio_init re-enabled",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "1"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_spi_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + SPI Init (Debug)",
+            "description": "Standalone BLE diagnostic with Qorvo GPIO and SPI init re-enabled",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "2"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_dwirq_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + DW IRQ Init (Debug)",
+            "description": "Standalone BLE diagnostic with Qorvo GPIO, SPI, and DW IRQ init re-enabled",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "3"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_dwprobe_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + DW Probe (Debug)",
+            "description": "Standalone BLE diagnostic through DW3000 reset/probe",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "4"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_dwinit_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + DW Initialise (Debug)",
+            "description": "Standalone BLE diagnostic through dwt_initialise",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "5"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_dwconfig_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + DW Configure (Debug)",
+            "description": "Standalone BLE diagnostic through dwt_configure",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "6"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_dwsettings_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + DW Settings (Debug)",
+            "description": "Standalone BLE diagnostic through post-config DW ranging settings",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "7"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_accel_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + Accel Init (Debug)",
+            "description": "Standalone BLE diagnostic through accel_init",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "8"
+            }
+        },
+        {
+            "name": "ble_gatt_standalone_rtc_debug",
+            "inherits": "ble_gatt_standalone_debug",
+            "displayName": "BLE GATT NUS Standalone + RTC2 Start (Debug)",
+            "description": "Standalone BLE diagnostic through RTC2 start before the ranging loop",
+            "cacheVariables": {
+                "UWB_BLE_GATT_STANDALONE_STAGE": "9"
+            }
+        },
+        {
             "name": "initiator_legacy_debug",
             "inherits": "initiator_debug",
             "displayName": "Initiator Legacy LIS2DH12 (Debug)"
@@ -138,6 +276,66 @@
         {
             "name": "initiator_gena_ble_adv_dfu_debug",
             "configurePreset": "initiator_gena_ble_adv_dfu_debug"
+        },
+        {
+            "name": "initiator_gena_ble_gatt_debug",
+            "configurePreset": "initiator_gena_ble_gatt_debug"
+        },
+        {
+            "name": "initiator_gena_ble_gatt_no_uart_rx_debug",
+            "configurePreset": "initiator_gena_ble_gatt_no_uart_rx_debug"
+        },
+        {
+            "name": "initiator_gena_ble_gatt_no_uart_debug",
+            "configurePreset": "initiator_gena_ble_gatt_no_uart_debug"
+        },
+        {
+            "name": "initiator_gena_ble_gatt_no_uart_sd_vtor_debug",
+            "configurePreset": "initiator_gena_ble_gatt_no_uart_sd_vtor_debug"
+        },
+        {
+            "name": "initiator_gena_ble_gatt_pause_debug",
+            "configurePreset": "initiator_gena_ble_gatt_pause_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_debug",
+            "configurePreset": "ble_gatt_standalone_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_gpio_debug",
+            "configurePreset": "ble_gatt_standalone_gpio_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_spi_debug",
+            "configurePreset": "ble_gatt_standalone_spi_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_dwirq_debug",
+            "configurePreset": "ble_gatt_standalone_dwirq_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_dwprobe_debug",
+            "configurePreset": "ble_gatt_standalone_dwprobe_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_dwinit_debug",
+            "configurePreset": "ble_gatt_standalone_dwinit_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_dwconfig_debug",
+            "configurePreset": "ble_gatt_standalone_dwconfig_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_dwsettings_debug",
+            "configurePreset": "ble_gatt_standalone_dwsettings_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_accel_debug",
+            "configurePreset": "ble_gatt_standalone_accel_debug"
+        },
+        {
+            "name": "ble_gatt_standalone_rtc_debug",
+            "configurePreset": "ble_gatt_standalone_rtc_debug"
         },
         {
             "name": "initiator_release",

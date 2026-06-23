@@ -78,8 +78,19 @@ set(RAM_SIZE   0x00020000 CACHE STRING "Ram size" FORCE)      # 128KB
 
 option(UWB_DFU_APP_LAYOUT "Build application for Nordic Secure DFU bootloader layout" OFF)
 option(UWB_BLE_ADV_ENABLED "Broadcast initiator distance in BLE advertising packets without SoftDevice" OFF)
+option(UWB_BLE_GATT_ENABLED "Expose initiator commands and telemetry over Nordic UART Service BLE GATT" OFF)
+option(UWB_BLE_GATT_STANDALONE "Diagnostic: build only a minimal S113/NUS app without UWB, SPI, or UART" OFF)
+option(UWB_UART_RX_DISABLED "Diagnostic: do not start UART RX or poll UART commands" OFF)
+option(UWB_UART_TX_DISABLED "Diagnostic: drop UART TX log output" OFF)
+option(UWB_SOFTDEVICE_VTOR_DIRECT "Diagnostic: point VTOR directly at the SoftDevice vector table after BLE init" OFF)
+option(UWB_BLE_GATT_PAUSE_AFTER_READY "Diagnostic: pause after BLE_GATT,READY before ranging loop" OFF)
+set(UWB_BLE_GATT_STANDALONE_STAGE 0 CACHE STRING "Diagnostic standalone init stage: 0=BLE only, 1=gpio_init, 2=SPI init, 3=DW IRQ init, 4=DW probe, 5=DW initialise, 6=DW configure, 7=DW ranging settings, 8=accel init, 9=RTC2 start")
 set(UWB_DFU_APP_FLASH_ADDR 0x00001000 CACHE STRING "Application flash start when Nordic MBR/bootloader is installed")
 set(UWB_DFU_BOOTLOADER_START 0x00078000 CACHE STRING "Reserved bootloader start address for nRF52833 Secure DFU")
+set(UWB_BLE_GATT_APP_FLASH_ADDR 0x0001C000 CACHE STRING "Application flash start for nRF52833 S113 SoftDevice")
+set(UWB_BLE_GATT_SETTINGS_FLASH_ADDR 0x00077000 CACHE STRING "Reserved flash page for BLE GATT persistent settings")
+set(UWB_BLE_GATT_APP_RAM_ADDR 0x20002608 CACHE STRING "Application RAM start for nRF52833 S113 SoftDevice")
+set(UWB_NRF5_SDK_PATH "${CMAKE_SOURCE_DIR}/nRF5_SDK_17.1.0_ddde560" CACHE PATH "Path to local Nordic nRF5 SDK")
 
 # Include SDK CMake helpers.
 include("${QORVO_SDK_PATH}/cmake/config.cmake")
@@ -90,6 +101,30 @@ if(UWB_DFU_APP_LAYOUT)
     set(FLASH_ADDR ${UWB_DFU_APP_FLASH_ADDR} CACHE STRING "Flash start address" FORCE)
     set(FLASH_SIZE ${UWB_DFU_APP_FLASH_SIZE} CACHE STRING "Flash size" FORCE)
     message("DFU app layout: FLASH_ADDR=${FLASH_ADDR}, FLASH_SIZE=${FLASH_SIZE}, BOOTLOADER_START=${UWB_DFU_BOOTLOADER_START}")
+endif()
+
+if(UWB_BLE_ADV_ENABLED AND UWB_BLE_GATT_ENABLED)
+    message(FATAL_ERROR "UWB_BLE_ADV_ENABLED and UWB_BLE_GATT_ENABLED are mutually exclusive")
+endif()
+
+if(UWB_BLE_GATT_STANDALONE AND NOT UWB_BLE_GATT_ENABLED)
+    message(FATAL_ERROR "UWB_BLE_GATT_STANDALONE requires UWB_BLE_GATT_ENABLED")
+endif()
+
+if(UWB_BLE_GATT_ENABLED)
+    if(NOT UWB_ROLE STREQUAL "initiator")
+        message(FATAL_ERROR "UWB_BLE_GATT_ENABLED is currently supported only for initiator builds")
+    endif()
+    if(NOT EXISTS "${UWB_NRF5_SDK_PATH}/components/softdevice/s113/hex/s113_nrf52_7.2.0_softdevice.hex")
+        message(FATAL_ERROR "UWB_BLE_GATT_ENABLED requires nRF5 SDK 17.1.0 at UWB_NRF5_SDK_PATH=${UWB_NRF5_SDK_PATH}")
+    endif()
+    math(EXPR UWB_BLE_GATT_APP_FLASH_SIZE "${UWB_BLE_GATT_SETTINGS_FLASH_ADDR} - ${UWB_BLE_GATT_APP_FLASH_ADDR}" OUTPUT_FORMAT HEXADECIMAL)
+    set(FLASH_ADDR ${UWB_BLE_GATT_APP_FLASH_ADDR} CACHE STRING "Flash start address" FORCE)
+    set(FLASH_SIZE ${UWB_BLE_GATT_APP_FLASH_SIZE} CACHE STRING "Flash size" FORCE)
+    set(RAM_ADDR ${UWB_BLE_GATT_APP_RAM_ADDR} CACHE STRING "Ram start address" FORCE)
+    math(EXPR UWB_BLE_GATT_APP_RAM_SIZE "0x20020000 - ${UWB_BLE_GATT_APP_RAM_ADDR}" OUTPUT_FORMAT HEXADECIMAL)
+    set(RAM_SIZE ${UWB_BLE_GATT_APP_RAM_SIZE} CACHE STRING "Ram size" FORCE)
+    message("BLE GATT S113 layout: FLASH_ADDR=${FLASH_ADDR}, FLASH_SIZE=${FLASH_SIZE}, SETTINGS_ADDR=${UWB_BLE_GATT_SETTINGS_FLASH_ADDR}, RAM_ADDR=${RAM_ADDR}, RAM_SIZE=${RAM_SIZE}")
 endif()
 
 # SDK paths.
@@ -193,7 +228,12 @@ set(PROJECT_SOURCES
 )
 
 # Select initiator or responder application source.
-if(UWB_ROLE STREQUAL "initiator")
+if(UWB_BLE_GATT_STANDALONE)
+    list(APPEND PROJECT_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/ble/ble_gatt_standalone_main.c
+        ${CMAKE_SOURCE_DIR}/src/accel/accel.c
+    )
+elseif(UWB_ROLE STREQUAL "initiator")
     list(APPEND PROJECT_SOURCES
         ${CMAKE_SOURCE_DIR}/src/initiator/main_initiator.c
         ${CMAKE_SOURCE_DIR}/src/accel/accel.c
@@ -216,10 +256,33 @@ if(UWB_BLE_ADV_ENABLED)
     )
 endif()
 
+if(UWB_BLE_GATT_ENABLED)
+    set(NRF5_SDK_PATH "${UWB_NRF5_SDK_PATH}")
+    list(APPEND PROJECT_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/ble/ble_nus_bridge.c
+        ${CMAKE_SOURCE_DIR}/src/ble/softdevice_svc_forwarder.S
+        ${CMAKE_SOURCE_DIR}/src/common/uwb_persistent_settings.c
+        ${NRF5_SDK_PATH}/components/ble/ble_services/ble_nus/ble_nus.c
+        ${NRF5_SDK_PATH}/components/ble/ble_link_ctx_manager/ble_link_ctx_manager.c
+        ${NRF5_SDK_PATH}/components/ble/common/ble_advdata.c
+        ${NRF5_SDK_PATH}/components/ble/common/ble_conn_state.c
+        ${NRF5_SDK_PATH}/components/ble/common/ble_srv_common.c
+        ${NRF5_SDK_PATH}/components/ble/nrf_ble_gatt/nrf_ble_gatt.c
+        ${NRF5_SDK_PATH}/components/softdevice/common/nrf_sdh.c
+        ${NRF5_SDK_PATH}/components/softdevice/common/nrf_sdh_ble.c
+        ${NRF5_SDK_PATH}/components/softdevice/common/nrf_sdh_soc.c
+        ${NRF5_SDK_PATH}/components/libraries/atomic_flags/nrf_atflags.c
+        ${NRF5_SDK_PATH}/components/libraries/experimental_section_vars/nrf_section_iter.c
+        ${NRF5_SDK_PATH}/modules/nrfx/soc/nrfx_atomic.c
+    )
+endif()
+
 # Custom application entrypoint.
-list(APPEND PROJECT_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/main.c
-)
+if(NOT UWB_BLE_GATT_STANDALONE)
+    list(APPEND PROJECT_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/main.c
+    )
+endif()
 
 # Include directories.
 set(INCLUDE_DIRS
@@ -261,6 +324,33 @@ set(INCLUDE_DIRS
     ${EXAMPLES_PATH}/examples/examples_info
 )
 
+if(UWB_BLE_GATT_ENABLED)
+    list(APPEND INCLUDE_DIRS
+        ${UWB_NRF5_SDK_PATH}/components
+        ${UWB_NRF5_SDK_PATH}/components/ble/common
+        ${UWB_NRF5_SDK_PATH}/components/ble/ble_link_ctx_manager
+        ${UWB_NRF5_SDK_PATH}/components/ble/ble_services/ble_nus
+        ${UWB_NRF5_SDK_PATH}/components/ble/nrf_ble_gatt
+        ${UWB_NRF5_SDK_PATH}/components/softdevice/common
+        ${UWB_NRF5_SDK_PATH}/components/softdevice/s113/headers
+        ${UWB_NRF5_SDK_PATH}/components/softdevice/s113/headers/nrf52
+        ${UWB_NRF5_SDK_PATH}/components/libraries/experimental_section_vars
+        ${UWB_NRF5_SDK_PATH}/components/libraries/atomic_flags
+        ${UWB_NRF5_SDK_PATH}/components/libraries/svc
+        ${UWB_NRF5_SDK_PATH}/components/libraries/fds
+        ${UWB_NRF5_SDK_PATH}/components/libraries/fstorage
+        ${UWB_NRF5_SDK_PATH}/components/libraries/timer
+        ${UWB_NRF5_SDK_PATH}/components/libraries/util
+        ${UWB_NRF5_SDK_PATH}/components/libraries/strerror
+        ${UWB_NRF5_SDK_PATH}/external/fprintf
+        ${UWB_NRF5_SDK_PATH}/modules/nrfx
+        ${UWB_NRF5_SDK_PATH}/modules/nrfx/hal
+        ${UWB_NRF5_SDK_PATH}/modules/nrfx/mdk
+        ${UWB_NRF5_SDK_PATH}/modules/nrfx/soc
+        ${UWB_NRF5_SDK_PATH}/integration/nrfx
+    )
+endif()
+
 # Create executable.
 add_executable(${TARGET_ELF}
     ${PLATFORM_SOURCES}
@@ -269,6 +359,13 @@ add_executable(${TARGET_ELF}
 )
 
 target_include_directories(${TARGET_ELF} PRIVATE ${INCLUDE_DIRS})
+
+if(UWB_BLE_GATT_ENABLED)
+    target_include_directories(${TARGET_ELF} BEFORE PRIVATE
+        ${UWB_NRF5_SDK_PATH}/components/softdevice/s113/headers
+        ${UWB_NRF5_SDK_PATH}/components/softdevice/s113/headers/nrf52
+    )
+endif()
 
 target_link_libraries(${TARGET_ELF} PRIVATE
     uwb_driver
@@ -284,7 +381,7 @@ target_compile_definitions(${TARGET_ELF} PRIVATE
     CONFIG_GPIO_AS_PINRESET
     FLOAT_ABI_HARD
     INITIALIZE_USER_SECTIONS
-    NO_VTOR_CONFIG
+    $<$<NOT:$<BOOL:${UWB_BLE_GATT_ENABLED}>>:NO_VTOR_CONFIG>
     NRF52833_XXAA
     USE_DRV_DW3000
     USE_DRV_DW3720
@@ -301,7 +398,48 @@ target_compile_definitions(${TARGET_ELF} PRIVATE
     $<$<STREQUAL:${UWB_ACCEL_TARGET},gena>:UWB_ACCEL_TARGET_GENA>
     $<$<STREQUAL:${UWB_ACCEL_TARGET},auto>:UWB_ACCEL_TARGET_AUTO>
     $<$<BOOL:${UWB_BLE_ADV_ENABLED}>:UWB_BLE_ADV_ENABLED>
+    $<$<BOOL:${UWB_BLE_GATT_ENABLED}>:UWB_BLE_GATT_ENABLED>
+    $<$<BOOL:${UWB_BLE_GATT_STANDALONE}>:UWB_BLE_GATT_STANDALONE>
+    $<$<BOOL:${UWB_UART_RX_DISABLED}>:UWB_UART_RX_DISABLED>
+    $<$<BOOL:${UWB_UART_TX_DISABLED}>:UWB_UART_TX_DISABLED>
+    $<$<BOOL:${UWB_SOFTDEVICE_VTOR_DIRECT}>:UWB_SOFTDEVICE_VTOR_DIRECT>
+    $<$<BOOL:${UWB_BLE_GATT_PAUSE_AFTER_READY}>:UWB_BLE_GATT_PAUSE_AFTER_READY>
+    UWB_BLE_GATT_STANDALONE_STAGE=${UWB_BLE_GATT_STANDALONE_STAGE}
 )
+
+if(UWB_BLE_GATT_ENABLED)
+    target_compile_definitions(${TARGET_ELF} PRIVATE
+        APP_TIMER_V2
+        APP_TIMER_V2_RTC1_ENABLED
+        BLE_ADVDATA_ENABLED=1
+        BLE_CONN_STATE_ENABLED=1
+        BLE_NUS_ENABLED=1
+        BLE_NUS_BLE_OBSERVER_PRIO=2
+        NRF_BLE_GATT_ENABLED=1
+        NRF_BLE_GATT_MTU_EXCHANGE_INITIATION_ENABLED=1
+        NRF_SDH_ENABLED=1
+        NRF_SDH_BLE_ENABLED=1
+        NRF_SDH_SOC_ENABLED=1
+        UWB_SETTINGS_FLASH_ADDR=${UWB_BLE_GATT_SETTINGS_FLASH_ADDR}
+        NRF_SDH_CLOCK_LF_SRC=0
+        NRF_SDH_CLOCK_LF_RC_CTIV=16
+        NRF_SDH_CLOCK_LF_RC_TEMP_CTIV=2
+        NRF_SDH_CLOCK_LF_ACCURACY=1
+        NRF_SDH_BLE_CENTRAL_LINK_COUNT=0
+        NRF_SDH_BLE_GAP_DATA_LENGTH=27
+        NRF_SDH_BLE_GAP_EVENT_LENGTH=6
+        NRF_SDH_BLE_GATT_MAX_MTU_SIZE=23
+        NRF_SDH_BLE_GATTS_ATTR_TAB_SIZE=1408
+        NRF_SDH_BLE_OBSERVER_PRIO_LEVELS=4
+        NRF_SDH_BLE_PERIPHERAL_LINK_COUNT=1
+        NRF_SDH_BLE_SERVICE_CHANGED=0
+        NRF_SDH_BLE_TOTAL_LINK_COUNT=1
+        NRF_SDH_BLE_VS_UUID_COUNT=1
+        NRF_SD_BLE_API_VERSION=7
+        S113
+        SOFTDEVICE_PRESENT
+    )
+endif()
 
 target_link_options(${TARGET_ELF} PRIVATE
     -Wl,-Map=$<TARGET_FILE_DIR:${TARGET_ELF}>/uwb_${UWB_ROLE}_${UWB_ACCEL_TARGET}.map

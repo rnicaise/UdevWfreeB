@@ -97,6 +97,8 @@ class UwbForegroundService : Service() {
     private var bleSampleCounterEpoch = 0L
     private var bleLastCounter16: Int? = null
     private var bleLastStatusElapsedMs = 0L
+    private var bleSettingsWriteInFlight = false
+    private var bleSettingsSaveAckSeen = false
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var toneGenerator: ToneGenerator? = null
@@ -228,6 +230,10 @@ class UwbForegroundService : Service() {
             ACTION_START_RECORDING -> startRecordingInternal()
             ACTION_STOP_RECORDING -> stopRecordingInternal()
             ACTION_FIRE -> {
+                if (RuntimeStore.state.value.linkSource == LinkSource.BLE_GATT) {
+                    RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, "BLE settings mode: use ARM buttons")
+                    return START_STICKY
+                }
                 serviceScope.launch {
                     val sent = firePyro("Manual FIRE", immediate = false)
                     RuntimeStore.setLinkState(
@@ -237,8 +243,20 @@ class UwbForegroundService : Service() {
                 }
             }
 
-            ACTION_ARM_DISTANCE_2M -> armDistanceTrigger()
-            ACTION_ARM_TILT_50_DEG -> armTiltTrigger()
+            ACTION_ARM_DISTANCE_2M -> {
+                if (RuntimeStore.state.value.linkSource == LinkSource.BLE_GATT) {
+                    serviceScope.launch { sendBleAdminArmCommand("ARM,DIST,2.00\n", SafetyArmMode.DISTANCE_2M, "Arming card: distance >= 2.00 m") }
+                } else {
+                    armDistanceTrigger()
+                }
+            }
+            ACTION_ARM_TILT_50_DEG -> {
+                if (RuntimeStore.state.value.linkSource == LinkSource.BLE_GATT) {
+                    serviceScope.launch { sendBleAdminArmCommand("ARM,TILT,50\n", SafetyArmMode.TILT_50_DEG, "Arming card: tilt delta >= 50°") }
+                } else {
+                    armTiltTrigger()
+                }
+            }
         }
 
         return START_STICKY
@@ -408,6 +426,16 @@ class UwbForegroundService : Service() {
             return
         }
 
+        if (line.startsWith("ARM,") || line.startsWith("ACK,ARM,")) {
+            if (line.startsWith("ACK,ARM,") && line.contains(",SAVED")) {
+                bleSettingsSaveAckSeen = true
+                bleSettingsWriteInFlight = false
+            }
+            updateFirmwareArmState(line)
+            RuntimeStore.setLinkState(RuntimeStore.state.value.linkState, line)
+            return
+        }
+
         if (line.startsWith("ACCEL_SRC,") || line.startsWith("ACCEL,")) {
             return
         }
@@ -543,6 +571,12 @@ class UwbForegroundService : Service() {
         }
     }
 
+    private fun requestFirmwareArmState() {
+        serviceScope.launch {
+            sendCommandSlowly("ARM,GET\n")
+        }
+    }
+
     private suspend fun sendCommandSlowly(command: String): Boolean {
         return commandMutex.withLock {
             if (RuntimeStore.state.value.linkSource == LinkSource.BLE_GATT) {
@@ -615,7 +649,7 @@ class UwbForegroundService : Service() {
         bleLastStatusElapsedMs = 0L
         connectedRole = ConnectedUwbRole.INITIATOR
 
-        RuntimeStore.onConnected("BLE scan listening for UWB", LinkSource.BLE_ADV)
+        RuntimeStore.setLinkState(LinkState.CONNECTING, "BLE scan listening for command mode", LinkSource.BLE_ADV)
         RuntimeStore.setConnectedRole(ConnectedUwbRole.INITIATOR)
 
         val callback = object : ScanCallback() {
@@ -642,7 +676,7 @@ class UwbForegroundService : Service() {
 
         bleScanCallback = callback
         scanner.startScan(null, settings, callback)
-        RuntimeStore.setLinkState(LinkState.CONNECTED, "BLE scan active", LinkSource.BLE_ADV)
+        RuntimeStore.setLinkState(LinkState.CONNECTING, "BLE scan active", LinkSource.BLE_ADV)
     }
 
     @SuppressLint("MissingPermission")
@@ -725,19 +759,51 @@ class UwbForegroundService : Service() {
             return
         }
         val record = result.scanRecord ?: return
-        val name = record.deviceName ?: return
+        val serviceUuids = record.serviceUuids?.map { it.uuid }.orEmpty()
+        val name = record.deviceName ?: result.device.name
+        if (name == BLE_DEVICE_NAME || serviceUuids.contains(NUS_SERVICE_UUID)) {
+            Timber.i(
+                "BLE scan candidate name=%s address=%s connectable=%s rssi=%d services=%s",
+                name,
+                result.device.address,
+                result.isConnectable,
+                result.rssi,
+                serviceUuids.joinToString(),
+            )
+        }
+        if (name == null) {
+            return
+        }
         if (name != BLE_DEVICE_NAME) {
             return
         }
 
         RuntimeStore.setLinkState(LinkState.CONNECTING, "BLE GATT connecting", LinkSource.BLE_ADV)
         closeBleScan()
+        Timber.i("BLE GATT connectGatt address=%s name=%s", result.device.address, name)
         activeBleGatt = result.device.connectGatt(this, false, bleGattCallback)
     }
 
     private val bleGattCallback = object : BluetoothGattCallback() {
         @SuppressLint("MissingPermission")
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            Timber.i("BLE GATT state status=%d newState=%d address=%s", status, newState, gatt.device.address)
+            if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                val normalAdminDisconnect = RuntimeStore.state.value.linkSource == LinkSource.BLE_GATT &&
+                    (bleSettingsWriteInFlight || bleSettingsSaveAckSeen || status == 22 || status == 19 || status == BluetoothGatt.GATT_SUCCESS)
+                val message = when {
+                    bleSettingsSaveAckSeen -> "BLE settings saved, disconnected"
+                    normalAdminDisconnect -> "BLE command session disconnected"
+                    status == BluetoothGatt.GATT_SUCCESS -> "BLE GATT disconnected"
+                    else -> "BLE GATT error: $status"
+                }
+                bleSettingsWriteInFlight = false
+                bleSettingsSaveAckSeen = false
+                RuntimeStore.setLinkState(LinkState.DISCONNECTED, message)
+                closeBleGatt()
+                return
+            }
+
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE GATT error: $status")
                 closeBleGatt()
@@ -749,15 +815,18 @@ class UwbForegroundService : Service() {
                     RuntimeStore.setLinkState(LinkState.CONNECTING, "BLE GATT discovering", LinkSource.BLE_GATT)
                     gatt.discoverServices()
                 }
-                BluetoothProfile.STATE_DISCONNECTED -> {
-                    RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE GATT disconnected")
-                    closeBleGatt()
-                }
             }
         }
 
         @SuppressLint("MissingPermission")
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            Timber.i(
+                "BLE GATT services status=%d services=%s",
+                status,
+                gatt.services.joinToString { service ->
+                    "${service.uuid}[${service.characteristics.joinToString { it.uuid.toString() }}]"
+                },
+            )
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE services error: $status")
                 closeBleGatt()
@@ -768,6 +837,7 @@ class UwbForegroundService : Service() {
             val command = service?.getCharacteristic(NUS_RX_CHAR_UUID)
             val notify = service?.getCharacteristic(NUS_TX_CHAR_UUID)
             if (command == null) {
+                Timber.w("BLE GATT NUS RX characteristic missing")
                 RuntimeStore.setLinkState(LinkState.CONNECTED, "BLE monitor only", LinkSource.BLE_ADV)
                 return
             }
@@ -789,6 +859,10 @@ class UwbForegroundService : Service() {
                         @Suppress("DEPRECATION")
                         gatt.writeDescriptor(descriptor)
                     }
+                }
+                serviceScope.launch {
+                    delay(300)
+                    requestFirmwareArmState()
                 }
             }
         }
@@ -880,6 +954,45 @@ class UwbForegroundService : Service() {
         tiltBaseline = null
         RuntimeStore.setSafetyArmState(SafetyArmMode.DISTANCE_2M, "Armed: distance >= 2.00 m")
         toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP, ARM_BEEP_DURATION_MS)
+    }
+
+    private suspend fun sendBleAdminArmCommand(command: String, mode: SafetyArmMode, status: String) {
+        bleSettingsWriteInFlight = true
+        bleSettingsSaveAckSeen = false
+        RuntimeStore.setSafetyArmState(mode, status)
+        val sent = sendCommandSlowly(command)
+        if (!sent) {
+            bleSettingsWriteInFlight = false
+        }
+        RuntimeStore.setSafetyArmState(
+            if (sent) mode else SafetyArmMode.DISARMED,
+            if (sent) "Waiting card setting save ACK" else "Card arm command failed",
+        )
+        if (sent) {
+            toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP, ARM_BEEP_DURATION_MS)
+        }
+    }
+
+    private fun updateFirmwareArmState(line: String) {
+        val normalized = line.uppercase()
+        when {
+            normalized.contains("DISTANCE_2M") -> RuntimeStore.setSafetyArmState(
+                SafetyArmMode.DISTANCE_2M,
+                "Card setting: armed distance >= 2.00 m",
+            )
+            normalized.contains("TILT_50") -> RuntimeStore.setSafetyArmState(
+                SafetyArmMode.TILT_50_DEG,
+                "Card setting: armed tilt delta >= 50°",
+            )
+            normalized.contains("DISARMED") -> RuntimeStore.setSafetyArmState(
+                SafetyArmMode.DISARMED,
+                "Card setting: disarmed",
+            )
+            normalized.contains("WRITE_PENDING") -> RuntimeStore.setSafetyArmState(
+                RuntimeStore.state.value.safetyArmMode,
+                "Card setting write pending",
+            )
+        }
     }
 
     private fun armTiltTrigger() {

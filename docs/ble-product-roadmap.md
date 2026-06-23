@@ -44,7 +44,7 @@ Decoded packet fields:
 - byte 2-3: unsigned sample counter, little-endian
 - scan RSSI is shown as the radio RSSI field
 
-With the current firmware this mode is monitor-only because `BLE_ADV` is non-connectable. The Android app is also prepared for the next firmware step: if the `UWB` peripheral is connectable and exposes Nordic UART Service, the app switches to `BLE GATT` and sends the same command strings used over USB.
+With `BLE_ADV` firmware this mode is monitor-only because the advertiser is non-connectable. The Android app is also prepared for the GATT firmware path: if the `UWB` peripheral is connectable and exposes Nordic UART Service, the app switches to `BLE GATT` and sends the same command strings used over USB.
 
 BLE command service expected by the Android app:
 
@@ -54,6 +54,27 @@ BLE command service expected by the Android app:
 - Commands: `PYRO,FIRE`, `PYRO,FIRE_NOW`, `CFG,GET_ROLE`, plus future config commands
 
 FIRE and arming controls are enabled only for USB or `BLE GATT`. Plain `BLE` advertising remains read-only.
+
+## Firmware prototype: Nordic UART Service
+
+The `initiator_gena_ble_gatt_debug` preset builds a first connectable BLE command prototype on nRF52833 with SoftDevice S113 and Nordic UART Service.
+
+Build:
+
+```sh
+cmake --preset initiator_gena_ble_gatt_debug
+cmake --build --preset initiator_gena_ble_gatt_debug
+```
+
+Runtime behavior:
+
+- Device name: `UWB`
+- SoftDevice: S113, app flash start `0x0001C000`, app RAM start `0x20002608`
+- Service UUID: Nordic UART Service `6e400001-b5a3-f393-e0a9-e50e24dcca9e`
+- RX/write accepts newline-terminated command strings such as `CFG,GET_ROLE`, `PYRO,FIRE`, and `PYRO,FIRE_NOW`
+- TX/notify mirrors the existing UART line stream, including role/status responses and CSV distance rows
+
+This is not yet a UART Secure DFU package path. First hardware validation should use J-Link/SWD to program S113 plus the app, or a SoftDevice-aware bootloader/settings flow. The existing non-SoftDevice UART DFU and raw BLE advertising builds remain separate.
 
 ## Product direction: connectable GATT
 

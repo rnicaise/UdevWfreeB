@@ -14,13 +14,15 @@
 #define UART_TX_PIN NRF_GPIO_PIN_MAP(0, 19)
 #define UART_RX_PIN NRF_GPIO_PIN_MAP(0, 15)
 
-static uint8_t rx_buf[UART_RX_DMA_BUF_LEN];
-static char rx_line[UART_RX_CMD_MAX];
-static char cmd_queue[UART_RX_CMD_QUEUE_LEN][UART_RX_CMD_MAX];
 static uint32_t rx_line_len;
 static uint8_t cmd_queue_head;
 static uint8_t cmd_queue_tail;
 static uint8_t cmd_queue_count;
+
+#ifndef UWB_UART_RX_DISABLED
+static uint8_t rx_buf[UART_RX_DMA_BUF_LEN];
+static char rx_line[UART_RX_CMD_MAX];
+static char cmd_queue[UART_RX_CMD_QUEUE_LEN][UART_RX_CMD_MAX];
 
 static void uart_enqueue_cmd(const char *line);
 
@@ -75,9 +77,11 @@ static void uart_start_rx_buffer(void)
     NRF_UARTE0->EVENTS_RXTO = 0;
     NRF_UARTE0->TASKS_STARTRX = 1;
 }
+#endif
 
 static bool tx_busy = false;
 
+#ifndef UWB_UART_TX_DISABLED
 static void uart_wait_tx_done(void)
 {
     uint32_t guard = 0;
@@ -121,16 +125,38 @@ static void uart_write_bytes(const uint8_t *data, uint32_t len)
     NRF_UARTE0->TASKS_STARTTX = 1;
     tx_busy = true;
 }
+#endif
 
 void uart_log_init(void)
 {
+    tx_busy = false;
+    rx_line_len = 0;
+    cmd_queue_head = 0;
+    cmd_queue_tail = 0;
+    cmd_queue_count = 0;
+
+#if defined(UWB_UART_RX_DISABLED) && defined(UWB_UART_TX_DISABLED)
+    return;
+#else
     NRF_UARTE0->ENABLE = 0;
 
+#ifndef UWB_UART_TX_DISABLED
     nrf_gpio_cfg_output(UART_TX_PIN);
+#endif
+#ifndef UWB_UART_RX_DISABLED
     nrf_gpio_cfg_input(UART_RX_PIN, NRF_GPIO_PIN_NOPULL);
+#endif
 
+#ifndef UWB_UART_TX_DISABLED
     NRF_UARTE0->PSEL.TXD = UART_TX_PIN;
+#else
+    NRF_UARTE0->PSEL.TXD = 0xFFFFFFFF;
+#endif
+#ifndef UWB_UART_RX_DISABLED
     NRF_UARTE0->PSEL.RXD = UART_RX_PIN;
+#else
+    NRF_UARTE0->PSEL.RXD = 0xFFFFFFFF;
+#endif
     NRF_UARTE0->PSEL.CTS = 0xFFFFFFFF;
     NRF_UARTE0->PSEL.RTS = 0xFFFFFFFF;
 
@@ -139,16 +165,18 @@ void uart_log_init(void)
 
     NRF_UARTE0->ENABLE = UARTE_ENABLE_ENABLE_Enabled;
 
-    tx_busy = false;
-    rx_line_len = 0;
-    cmd_queue_head = 0;
-    cmd_queue_tail = 0;
-    cmd_queue_count = 0;
+#ifndef UWB_UART_RX_DISABLED
     uart_start_rx_buffer();
+#endif
+#endif
 }
 
 void uart_log_write(const char *str)
 {
+#ifdef UWB_UART_TX_DISABLED
+    (void)str;
+    return;
+#else
     /* Ping-pong buffers: one can be filled while the other is being
      * read by EasyDMA (TX is pipelined, see uart_write_bytes). */
     static uint8_t tx_bufs[2][UART_TX_CHUNK_MAX + 2];
@@ -209,15 +237,21 @@ void uart_log_write(const char *str)
         uart_write_bytes(buf, chunk);
         tx_buf_idx ^= 1u;
     }
+#endif
 }
 
 void uart_log_flush(void)
 {
+#ifndef UWB_UART_TX_DISABLED
     uart_wait_tx_done();
+#endif
 }
 
 void uart_log_poll_rx(void)
 {
+#ifdef UWB_UART_RX_DISABLED
+    return;
+#else
     uint32_t guard = 0;
     uint32_t amount;
     uint32_t idx;
@@ -244,10 +278,16 @@ void uart_log_poll_rx(void)
     }
 
     uart_start_rx_buffer();
+#endif
 }
 
 bool uart_log_read_command(char *out, uint32_t out_len)
 {
+#ifdef UWB_UART_RX_DISABLED
+    (void)out;
+    (void)out_len;
+    return false;
+#else
     uint32_t n;
     const char *ready_line;
 
@@ -268,4 +308,5 @@ bool uart_log_read_command(char *out, uint32_t out_len)
     cmd_queue_head = (uint8_t)((cmd_queue_head + 1u) % UART_RX_CMD_QUEUE_LEN);
     cmd_queue_count--;
     return true;
+#endif
 }

@@ -80,7 +80,7 @@ fun UwbMainScreen(
     }
     val signal = SignalQualityCalculator.fromSample(sample)
     val roleSubtitle = when (state.runtime.linkSource) {
-        LinkSource.BLE_ADV -> "BLE scan actif · distance broadcast UWB"
+        LinkSource.BLE_ADV -> "BLE scan actif · attente connexion commande"
         LinkSource.BLE_GATT -> "BLE connecte · commandes GATT actives"
         else -> when (state.runtime.connectedRole) {
             ConnectedUwbRole.INITIATOR -> "Initiator detecte · SS-TWR actif"
@@ -90,6 +90,8 @@ fun UwbMainScreen(
     }
     val commandControlsEnabled = state.runtime.linkState == LinkState.CONNECTED &&
         (state.runtime.linkSource == LinkSource.USB || state.runtime.linkSource == LinkSource.BLE_GATT)
+    val bleAdminConnected = state.runtime.linkState == LinkState.CONNECTED &&
+        state.runtime.linkSource == LinkSource.BLE_GATT
 
     LazyColumn(
         modifier = Modifier
@@ -113,6 +115,35 @@ fun UwbMainScreen(
                 color = TextSecondary,
             )
             StatusBadges(state)
+        }
+
+        item {
+            CardBlock {
+                Text("Controls", fontWeight = FontWeight.Bold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onConnect, modifier = Modifier.weight(1f)) { Text("USB") }
+                    Button(onClick = onStartBleScan, modifier = Modifier.weight(1f)) { Text("BLE") }
+                    Button(onClick = onDisconnect, modifier = Modifier.weight(1f)) { Text("Disconnect") }
+                }
+                FireButton(
+                    onClick = onFire,
+                    enabled = commandControlsEnabled && !bleAdminConnected &&
+                        (state.runtime.connectedRole == ConnectedUwbRole.INITIATOR ||
+                            state.runtime.connectedRole == ConnectedUwbRole.RESPONDER),
+                    armed = state.runtime.safetyArmMode != SafetyArmMode.DISARMED,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = onArmDistance2m,
+                    enabled = commandControlsEnabled,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Armer distance 2 m") }
+                Button(
+                    onClick = onArmTilt50deg,
+                    enabled = commandControlsEnabled && (bleAdminConnected || sample != null),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Armer inclinaison 50°") }
+            }
         }
 
         item {
@@ -267,30 +298,7 @@ fun UwbMainScreen(
 
         item {
             CardBlock {
-                Text("Controls", fontWeight = FontWeight.Bold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onConnect, modifier = Modifier.weight(1f)) { Text("USB") }
-                    Button(onClick = onStartBleScan, modifier = Modifier.weight(1f)) { Text("BLE") }
-                    Button(onClick = onDisconnect, modifier = Modifier.weight(1f)) { Text("Disconnect") }
-                }
-                FireButton(
-                    onClick = onFire,
-                    enabled = commandControlsEnabled &&
-                        (state.runtime.connectedRole == ConnectedUwbRole.INITIATOR ||
-                            state.runtime.connectedRole == ConnectedUwbRole.RESPONDER),
-                    armed = state.runtime.safetyArmMode != SafetyArmMode.DISARMED,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Button(
-                    onClick = onArmDistance2m,
-                    enabled = commandControlsEnabled,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Armer distance 2 m") }
-                Button(
-                    onClick = onArmTilt50deg,
-                    enabled = commandControlsEnabled && sample != null,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Armer inclinaison 50°") }
+                Text("Recording", fontWeight = FontWeight.Bold)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
                         onClick = onStartRecording,
@@ -630,7 +638,7 @@ private fun linkSourceLabel(source: LinkSource): String {
     return when (source) {
         LinkSource.NONE -> "Link"
         LinkSource.USB -> "USB"
-        LinkSource.BLE_ADV -> "BLE"
+        LinkSource.BLE_ADV -> "BLE SCAN"
         LinkSource.BLE_GATT -> "BLE GATT"
     }
 }

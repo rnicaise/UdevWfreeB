@@ -33,11 +33,18 @@
 #include "../common/ranging.h"
 #include "../common/uwb_profiles.h"
 #include "../common/radio_quality.h"
+#ifdef UWB_BLE_GATT_ENABLED
+#include "../common/uwb_persistent_settings.h"
+#endif
 #include "../accel/accel.h"
 #include "../board/pyro_buzzer.h"
 #include "../uart/uart_log.h"
 #ifdef UWB_BLE_ADV_ENABLED
 #include "../ble/ble_adv.h"
+#endif
+#ifdef UWB_BLE_GATT_ENABLED
+#include "../ble/ble_nus_bridge.h"
+#include "nrf_sdh.h"
 #endif
 
 #define POLL_MSG_PROFILE_IDX      16
@@ -174,6 +181,252 @@ static uint32_t ble_adv_last_ms = 0u;
 #endif
 static char output_buf[320];
 static char cmd_buf[96];
+
+typedef enum
+{
+    SAFETY_ARM_NONE = 0,
+    SAFETY_ARM_DISTANCE_2M,
+    SAFETY_ARM_TILT_50
+} safety_arm_mode_t;
+
+#define SAFETY_DISTANCE_TRIGGER_M      (2.0f)
+#define SAFETY_TILT_COS_50_DEG         (0.64278761)
+#define SAFETY_MIN_ACCEL_NORM_SQ       (40000)
+
+static safety_arm_mode_t safety_arm_mode = SAFETY_ARM_NONE;
+static bool safety_tilt_baseline_valid = false;
+static int16_t safety_tilt_baseline_x = 0;
+static int16_t safety_tilt_baseline_y = 0;
+static int16_t safety_tilt_baseline_z = 0;
+
+static void app_log_write(const char *line);
+
+static int64_t safety_accel_norm_sq(int16_t x, int16_t y, int16_t z)
+{
+    return ((int64_t)x * (int64_t)x) + ((int64_t)y * (int64_t)y) + ((int64_t)z * (int64_t)z);
+}
+
+static bool safety_accel_is_usable(const accel_data_t *sample)
+{
+    return safety_accel_norm_sq(sample->x, sample->y, sample->z) >= SAFETY_MIN_ACCEL_NORM_SQ;
+}
+
+static void safety_disarm(void)
+{
+    safety_arm_mode = SAFETY_ARM_NONE;
+    safety_tilt_baseline_valid = false;
+}
+
+#ifdef UWB_BLE_GATT_ENABLED
+static bool ble_gatt_reset_after_fire_window = false;
+
+static void safety_apply_persistent_arm_mode(uint32_t arm_mode)
+{
+    safety_disarm();
+    if (arm_mode == UWB_SETTINGS_ARM_DISTANCE_2M)
+    {
+        safety_arm_mode = SAFETY_ARM_DISTANCE_2M;
+    }
+    else if (arm_mode == UWB_SETTINGS_ARM_TILT_50)
+    {
+        safety_arm_mode = SAFETY_ARM_TILT_50;
+    }
+}
+#endif
+
+static void safety_request_fire_now(const char *event)
+{
+    fire_request_frames_remaining = 200u;
+    fire_request_code = POLL_MSG_FIRE_IMMEDIATE;
+    safety_disarm();
+#ifdef UWB_BLE_GATT_ENABLED
+    if (!uwb_persistent_settings_write_pending())
+    {
+        (void)uwb_persistent_settings_write_arm(UWB_SETTINGS_ARM_NONE);
+    }
+    ble_gatt_reset_after_fire_window = true;
+#endif
+    app_log_write(event);
+}
+
+static bool safety_tilt_exceeded(const accel_data_t *sample)
+{
+    int64_t baseline_norm_sq;
+    int64_t current_norm_sq;
+    int64_t dot_i;
+    float dot;
+    float limit;
+
+    if (!safety_tilt_baseline_valid || !safety_accel_is_usable(sample))
+    {
+        return false;
+    }
+
+    baseline_norm_sq = safety_accel_norm_sq(safety_tilt_baseline_x, safety_tilt_baseline_y, safety_tilt_baseline_z);
+    current_norm_sq = safety_accel_norm_sq(sample->x, sample->y, sample->z);
+    dot_i = ((int64_t)safety_tilt_baseline_x * (int64_t)sample->x) +
+            ((int64_t)safety_tilt_baseline_y * (int64_t)sample->y) +
+            ((int64_t)safety_tilt_baseline_z * (int64_t)sample->z);
+
+    if ((baseline_norm_sq < SAFETY_MIN_ACCEL_NORM_SQ) || (current_norm_sq < SAFETY_MIN_ACCEL_NORM_SQ))
+    {
+        return false;
+    }
+    if (dot_i <= 0)
+    {
+        return true;
+    }
+
+    dot = (float)dot_i;
+    limit = (float)(SAFETY_TILT_COS_50_DEG * SAFETY_TILT_COS_50_DEG) *
+            (float)baseline_norm_sq * (float)current_norm_sq;
+    return (dot * dot) <= limit;
+}
+
+static void safety_service_triggers(bool distance_valid, float distance_m, const accel_data_t *sample)
+{
+    if (safety_arm_mode == SAFETY_ARM_NONE)
+    {
+        return;
+    }
+
+    if ((safety_arm_mode == SAFETY_ARM_DISTANCE_2M) && distance_valid && (distance_m >= SAFETY_DISTANCE_TRIGGER_M))
+    {
+        safety_request_fire_now("EVENT,ARM_TRIGGER,DISTANCE_2M");
+        return;
+    }
+
+    if (safety_arm_mode == SAFETY_ARM_TILT_50)
+    {
+        if (!safety_tilt_baseline_valid)
+        {
+            if (safety_accel_is_usable(sample))
+            {
+                safety_tilt_baseline_x = sample->x;
+                safety_tilt_baseline_y = sample->y;
+                safety_tilt_baseline_z = sample->z;
+                safety_tilt_baseline_valid = true;
+                app_log_write("EVENT,ARM_TILT_BASELINE_CAPTURED");
+            }
+            return;
+        }
+
+        if (safety_tilt_exceeded(sample))
+        {
+            safety_request_fire_now("EVENT,ARM_TRIGGER,TILT_50");
+        }
+    }
+}
+
+#ifdef UWB_BLE_GATT_ENABLED
+#define BLE_GATT_COMMAND_WINDOW_MS 10000u
+#define BLE_GATT_ACK_DISCONNECT_DELAY_MS 1000u
+
+static bool ble_gatt_admin_shutdown_pending = false;
+static uint32_t ble_gatt_admin_shutdown_ms = 0u;
+static bool ble_gatt_shutdown_after_settings_write = false;
+static bool ble_gatt_admin_enabled = false;
+
+static uint32_t rtc2_ms(void)
+{
+    return (uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u);
+}
+
+static bool ble_gatt_wait_for_dw_status(uint32_t *status_reg, uint32_t mask, uint32_t timeout_ms)
+{
+    uint32_t start_ms = rtc2_ms();
+    uint32_t status = 0u;
+
+    while (((status = dwt_readsysstatuslo()) & mask) == 0u)
+    {
+        if ((uint32_t)(rtc2_ms() - start_ms) >= timeout_ms)
+        {
+            if (status_reg != NULL)
+            {
+                *status_reg = status;
+            }
+            return false;
+        }
+    }
+
+    if (status_reg != NULL)
+    {
+        *status_reg = status;
+    }
+    return true;
+}
+
+static void ble_gatt_schedule_admin_shutdown(void)
+{
+    ble_gatt_admin_shutdown_pending = true;
+    ble_gatt_admin_shutdown_ms = rtc2_ms() + BLE_GATT_ACK_DISCONNECT_DELAY_MS;
+}
+
+static bool ble_gatt_service_admin_shutdown(uint32_t now_ms)
+{
+    if (!ble_gatt_admin_shutdown_pending)
+    {
+        return false;
+    }
+
+    if ((int32_t)(now_ms - ble_gatt_admin_shutdown_ms) >= 0)
+    {
+        NVIC_SystemReset();
+    }
+    return true;
+}
+
+static const char *ble_gatt_arm_ack_for_mode(uint32_t arm_mode)
+{
+    if (arm_mode == UWB_SETTINGS_ARM_DISTANCE_2M)
+    {
+        return "ACK,ARM,DISTANCE_2M,SAVED";
+    }
+    if (arm_mode == UWB_SETTINGS_ARM_TILT_50)
+    {
+        return "ACK,ARM,TILT_50,SAVED";
+    }
+    return "ACK,ARM,DISARMED,SAVED";
+}
+
+static bool ble_gatt_start_settings_write(uint32_t arm_mode)
+{
+    if (!uwb_persistent_settings_write_arm(arm_mode))
+    {
+        app_log_write("ERR,ARM_SETTINGS_BUSY");
+        return true;
+    }
+
+    ble_gatt_shutdown_after_settings_write = true;
+    app_log_write("ACK,ARM_SETTINGS_WRITE_STARTED");
+    return false;
+}
+
+static void ble_gatt_service_settings_write(void)
+{
+    if (uwb_persistent_settings_consume_write_success())
+    {
+        uwb_persistent_settings_t settings = uwb_persistent_settings_get();
+        safety_apply_persistent_arm_mode(settings.arm_mode);
+        app_log_write(ble_gatt_arm_ack_for_mode(settings.arm_mode));
+        if (ble_gatt_shutdown_after_settings_write)
+        {
+            ble_gatt_shutdown_after_settings_write = false;
+            ble_gatt_schedule_admin_shutdown();
+        }
+    }
+
+    if (uwb_persistent_settings_consume_write_error())
+    {
+        app_log_write("ERR,ARM_SETTINGS_WRITE_FAILED");
+        if (ble_gatt_shutdown_after_settings_write)
+        {
+            ble_gatt_shutdown_after_settings_write = false;
+            ble_gatt_schedule_admin_shutdown();
+        }
+    }
+}
+#endif
 
 /* -- Physical plausibility gate --
  * Rejects (flags) distance samples that are physically impossible for the
@@ -329,7 +582,15 @@ extern dwt_txconfig_t txconfig_options_ch9;
 /* -- UART/debug function -- */
 extern void test_run_info(unsigned char *data);
 
-static void handle_app_command(const char *cmd);
+static bool handle_app_command(const char *cmd);
+
+static void app_log_write(const char *line)
+{
+    uart_log_write(line);
+#ifdef UWB_BLE_GATT_ENABLED
+    ble_nus_bridge_send_line(line);
+#endif
+}
 
 static bool is_supported_profile_opt(uint8_t opt)
 {
@@ -540,7 +801,7 @@ static void write_distance_csv(uint32_t ms, uint32_t sample, float distance_m,
     dst = append_u32(dst, responder_load_connected ? 1u : 0u);
     *dst = '\0';
 
-    uart_log_write(output_buf);
+    app_log_write(output_buf);
 }
 
 static void apply_tx_power_config(void)
@@ -583,34 +844,47 @@ static int apply_profile_option(uint8_t opt)
 static void process_app_commands(void)
 {
     uart_log_poll_rx();
+#ifdef UWB_BLE_GATT_ENABLED
+    ble_gatt_service_settings_write();
+#endif
     while (uart_log_read_command(cmd_buf, sizeof(cmd_buf)))
     {
-        handle_app_command(cmd_buf);
+        (void)handle_app_command(cmd_buf);
     }
+#ifdef UWB_BLE_GATT_ENABLED
+    while (ble_nus_bridge_read_command(cmd_buf, sizeof(cmd_buf)))
+    {
+        if (handle_app_command(cmd_buf))
+        {
+            ble_gatt_schedule_admin_shutdown();
+            break;
+        }
+    }
+#endif
 }
 
-static void handle_app_command(const char *cmd)
+static bool handle_app_command(const char *cmd)
 {
     if (strcmp(cmd, "BOOT,DFU") == 0)
     {
-        uart_log_write("ACK,BOOT_DFU");
+        app_log_write("ACK,BOOT_DFU");
         uart_log_flush();
         NRF_POWER->GPREGRET = (uint32_t)BOOTLOADER_DFU_START;
         NVIC_SystemReset();
-        return;
+        return false;
     }
 
     if ((strcmp(cmd, "CFG,GET_ROLE") == 0) || (strcmp(cmd, "INFO?") == 0))
     {
-        uart_log_write("ROLE,INITIATOR");
-        return;
+        app_log_write("ROLE,INITIATOR");
+        return false;
     }
 
     if (strcmp(cmd, "CFG,GET_PROFILE") == 0)
     {
         snprintf(output_buf, sizeof(output_buf), "PROFILE,%u", (unsigned int)current_profile_opt);
-        uart_log_write(output_buf);
-        return;
+        app_log_write(output_buf);
+        return false;
     }
 
     if (strcmp(cmd, "CFG,GET_TXPWR") == 0)
@@ -618,8 +892,31 @@ static void handle_app_command(const char *cmd)
         snprintf(output_buf, sizeof(output_buf), "TXPWR,%u,0x%08lx",
                  (unsigned int)current_tx_power_level,
                  (unsigned long)uwb_tx_power_value_for_level((uint8_t)config_options.chan, current_tx_power_level));
-        uart_log_write(output_buf);
-        return;
+        app_log_write(output_buf);
+        return false;
+    }
+
+    if ((strcmp(cmd, "ARM,GET") == 0) || (strcmp(cmd, "CFG,GET_ARM") == 0))
+    {
+        const char *mode = "DISARMED";
+#ifdef UWB_BLE_GATT_ENABLED
+        if (uwb_persistent_settings_write_pending())
+        {
+            app_log_write("ARM,WRITE_PENDING");
+            return false;
+        }
+#endif
+        if (safety_arm_mode == SAFETY_ARM_DISTANCE_2M)
+        {
+            mode = "DISTANCE_2M";
+        }
+        else if (safety_arm_mode == SAFETY_ARM_TILT_50)
+        {
+            mode = safety_tilt_baseline_valid ? "TILT_50" : "TILT_50_WAIT_BASELINE";
+        }
+        snprintf(output_buf, sizeof(output_buf), "ARM,%s", mode);
+        app_log_write(output_buf);
+        return false;
     }
 
     if (strncmp(cmd, "CFG,TXPWR,", 10) == 0)
@@ -627,8 +924,8 @@ static void handle_app_command(const char *cmd)
         uint8_t level = (uint8_t)strtoul(cmd + 10, NULL, 10);
         if (!uwb_tx_power_level_is_supported(level))
         {
-            uart_log_write("ERR,UNSUPPORTED_TXPWR");
-            return;
+            app_log_write("ERR,UNSUPPORTED_TXPWR");
+            return true;
         }
         current_tx_power_level = level;
         apply_tx_power_config();
@@ -636,8 +933,8 @@ static void handle_app_command(const char *cmd)
         snprintf(output_buf, sizeof(output_buf), "ACK,TXPWR,%u,0x%08lx",
                  (unsigned int)current_tx_power_level,
                  (unsigned long)uwb_tx_power_value_for_level((uint8_t)config_options.chan, current_tx_power_level));
-        uart_log_write(output_buf);
-        return;
+        app_log_write(output_buf);
+        return true;
     }
 
     if (strncmp(cmd, "CFG,PROFILE,", 12) == 0)
@@ -645,14 +942,14 @@ static void handle_app_command(const char *cmd)
         uint8_t opt = (uint8_t)strtoul(cmd + 12, NULL, 10);
         if (!is_supported_profile_opt(opt))
         {
-            uart_log_write("ERR,UNSUPPORTED_PROFILE");
-            return;
+            app_log_write("ERR,UNSUPPORTED_PROFILE");
+            return true;
         }
         if (opt == current_profile_opt)
         {
             switch_request_armed = false;
-            uart_log_write("ACK,PROFILE_ALREADY_ACTIVE");
-            return;
+            app_log_write("ACK,PROFILE_ALREADY_ACTIVE");
+            return true;
         }
         pending_profile_opt = opt;
         pending_switch_token = next_switch_token++;
@@ -662,8 +959,8 @@ static void handle_app_command(const char *cmd)
         }
         switch_request_armed = true;
         snprintf(output_buf, sizeof(output_buf), "ACK,PROFILE_SWITCH_ARMED,%u", (unsigned int)opt);
-        uart_log_write(output_buf);
-        return;
+        app_log_write(output_buf);
+        return true;
     }
 
     if (strncmp(cmd, "CFG,CHANNEL,", 12) == 0)
@@ -672,11 +969,11 @@ static void handle_app_command(const char *cmd)
         uint8_t opt = uwb_profile_opt_for_channel_rate_kbps(channel, 6800);
         if ((channel != 5u) && (channel != 9u))
         {
-            uart_log_write("ERR,UNSUPPORTED_CHANNEL");
-            return;
+            app_log_write("ERR,UNSUPPORTED_CHANNEL");
+            return true;
         }
         snprintf(output_buf, sizeof(output_buf), "ACK,CHANNEL_PROFILE,%u", (unsigned int)opt);
-        uart_log_write(output_buf);
+        app_log_write(output_buf);
         pending_profile_opt = opt;
         pending_switch_token = next_switch_token++;
         if (next_switch_token == 0u)
@@ -684,7 +981,7 @@ static void handle_app_command(const char *cmd)
             next_switch_token = 1u;
         }
         switch_request_armed = (opt != current_profile_opt);
-        return;
+        return true;
     }
 
     if (strncmp(cmd, "CFG,RATE,", 9) == 0)
@@ -694,11 +991,11 @@ static void handle_app_command(const char *cmd)
         uint8_t opt = uwb_profile_opt_for_channel_rate_kbps(channel, rate_kbps);
         if ((rate_kbps != 6800) && (rate_kbps != 850))
         {
-            uart_log_write("ERR,UNSUPPORTED_RATE");
-            return;
+            app_log_write("ERR,UNSUPPORTED_RATE");
+            return true;
         }
         snprintf(output_buf, sizeof(output_buf), "ACK,RATE_PROFILE,%u", (unsigned int)opt);
-        uart_log_write(output_buf);
+        app_log_write(output_buf);
         pending_profile_opt = opt;
         pending_switch_token = next_switch_token++;
         if (next_switch_token == 0u)
@@ -706,37 +1003,75 @@ static void handle_app_command(const char *cmd)
             next_switch_token = 1u;
         }
         switch_request_armed = (opt != current_profile_opt);
-        return;
+        return true;
     }
 
     if ((strcmp(cmd, "PYRO,FIRE") == 0) || (strcmp(cmd, "FIRE") == 0))
     {
         fire_request_frames_remaining = 200u;
         fire_request_code = POLL_MSG_FIRE_COUNTDOWN;
-        uart_log_write("ACK,PYRO_FORWARD_ARMED");
-        return;
+        app_log_write("ACK,PYRO_FORWARD_ARMED");
+        return true;
     }
 
     if ((strcmp(cmd, "PYRO,FIRE_NOW") == 0) || (strcmp(cmd, "FIRE_NOW") == 0))
     {
         fire_request_frames_remaining = 200u;
         fire_request_code = POLL_MSG_FIRE_IMMEDIATE;
-        uart_log_write("ACK,PYRO_FORWARD_NOW_ARMED");
-        return;
+        app_log_write("ACK,PYRO_FORWARD_NOW_ARMED");
+        return true;
     }
 
-    uart_log_write("ERR,READ_ONLY_SS_TWR");
+    if ((strcmp(cmd, "ARM,DIST,2.00") == 0) || (strcmp(cmd, "ARM,DIST,2") == 0) ||
+        (strcmp(cmd, "ARM,DISTANCE,2.00") == 0) || (strcmp(cmd, "ARM,DISTANCE,2") == 0))
+    {
+#ifdef UWB_BLE_GATT_ENABLED
+        return ble_gatt_start_settings_write(UWB_SETTINGS_ARM_DISTANCE_2M);
+#else
+        safety_arm_mode = SAFETY_ARM_DISTANCE_2M;
+        safety_tilt_baseline_valid = false;
+        app_log_write("ACK,ARM,DISTANCE_2M");
+        return true;
+#endif
+    }
+
+    if ((strcmp(cmd, "ARM,TILT,50") == 0) || (strcmp(cmd, "ARM,INCLINATION,50") == 0))
+    {
+#ifdef UWB_BLE_GATT_ENABLED
+        return ble_gatt_start_settings_write(UWB_SETTINGS_ARM_TILT_50);
+#else
+        safety_arm_mode = SAFETY_ARM_TILT_50;
+        safety_tilt_baseline_valid = false;
+        app_log_write("ACK,ARM,TILT_50");
+        return true;
+#endif
+    }
+
+    if ((strcmp(cmd, "ARM,DISARM") == 0) || (strcmp(cmd, "DISARM") == 0))
+    {
+#ifdef UWB_BLE_GATT_ENABLED
+        return ble_gatt_start_settings_write(UWB_SETTINGS_ARM_NONE);
+#else
+        safety_disarm();
+        app_log_write("ACK,ARM,DISARMED");
+        return true;
+#endif
+    }
+
+    app_log_write("ERR,READ_ONLY_SS_TWR");
+    return true;
 }
 
 /*
  * Entry point for initiator firmware.
  */
+
 int ss_twr_initiator_custom(void)
 {
     test_run_info((unsigned char *)"UWB RANGING INIT v1.0");
     uart_log_init();
-    uart_log_write("UWB RANGING INIT v1.0");
-    uart_log_write("ROLE,INITIATOR");
+    app_log_write("UWB RANGING INIT v1.0");
+    app_log_write("ROLE,INITIATOR");
 
     /* -- 1. Hardware init -- */
     port_set_dw_ic_spi_fastrate();
@@ -803,20 +1138,97 @@ int ss_twr_initiator_custom(void)
 
     /* CSV header on UART */
     test_run_info((unsigned char *)"# sample,distance_m,poll_tx,resp_rx,final_tx");
-    uart_log_write("# ms,sample,dist,rx_power,fp_power,clock_ppm,score,nlos,peak_fp,fp_conf,sts,iax,iay,iaz,rax,ray,raz,resp_acq_ms,init_acq_ms,resp_profile_opt,init_profile_opt,igx,igy,igz,rgx,rgy,rgz,valid,dist_filt,dist_smooth,rload_mv,rload_connected");
+    app_log_write("# ms,sample,dist,rx_power,fp_power,clock_ppm,score,nlos,peak_fp,fp_conf,sts,iax,iay,iaz,rax,ray,raz,resp_acq_ms,init_acq_ms,resp_profile_opt,init_profile_opt,igx,igy,igz,rgx,rgy,rgz,valid,dist_filt,dist_smooth,rload_mv,rload_connected");
 
     NRF_RTC2->PRESCALER = 0;
     NRF_RTC2->TASKS_START = 1;
 
 #ifdef UWB_BLE_ADV_ENABLED
     ble_adv_init();
-    uart_log_write("BLE_ADV,READY");
+    app_log_write("BLE_ADV,READY");
+#endif
+
+#ifdef UWB_BLE_GATT_ENABLED
+    uwb_persistent_settings_init();
+    {
+        uwb_persistent_settings_t settings = uwb_persistent_settings_get();
+        safety_apply_persistent_arm_mode(settings.arm_mode);
+        if (settings.arm_mode == UWB_SETTINGS_ARM_NONE)
+        {
+            ble_nus_bridge_init();
+            ble_gatt_admin_enabled = true;
+            app_log_write("BLE_GATT,READY");
+        }
+        else
+        {
+            ble_gatt_admin_enabled = false;
+            app_log_write("BLE_GATT,SKIP_ARMED");
+        }
+    }
+#ifdef UWB_SOFTDEVICE_VTOR_DIRECT
+    if (ble_gatt_admin_enabled)
+    {
+        SCB->VTOR = 0x00001000u;
+    }
+#endif
+#ifdef UWB_BLE_GATT_PAUSE_AFTER_READY
+    while (1)
+    {
+        process_app_commands();
+        __WFE();
+    }
+#endif
 #endif
 
     /* -- 5. Ranging loop -- */
     while (1)
     {
         process_app_commands();
+
+#ifdef UWB_BLE_GATT_ENABLED
+    if (ble_gatt_admin_enabled)
+    {
+            static bool ble_gatt_command_window_active = false;
+            static uint32_t ble_gatt_command_window_start_ms = 0u;
+            uint32_t now_ms = rtc2_ms();
+
+            if (ble_gatt_service_admin_shutdown(now_ms))
+            {
+                __WFE();
+                continue;
+            }
+
+            if (!ble_nus_bridge_is_advertising_enabled())
+            {
+                ble_gatt_command_window_active = false;
+            }
+            else
+            {
+                if (!ble_nus_bridge_is_client_ready())
+                {
+                    ble_gatt_command_window_active = false;
+                    __WFE();
+                    continue;
+                }
+
+                if (!ble_gatt_command_window_active)
+                {
+                    ble_gatt_command_window_active = true;
+                    ble_gatt_command_window_start_ms = now_ms;
+                }
+
+                if ((uint32_t)(now_ms - ble_gatt_command_window_start_ms) < BLE_GATT_COMMAND_WINDOW_MS)
+                {
+                    process_app_commands();
+                    __WFE();
+                    continue;
+                }
+
+                app_log_write("BLE_GATT,WINDOW_TIMEOUT");
+                NVIC_SystemReset();
+            }
+        }
+#endif
 
         /* === Read accelerometer (robust) ===
          * If init fails at boot (or later), retry periodically.
@@ -844,7 +1256,8 @@ int ss_twr_initiator_custom(void)
                 }
             }
         }
-        else
+
+    else
         {
             accel_sample_count++;
             if ((accel_decimation == 1u) || ((accel_sample_count % accel_decimation) == 0u))
@@ -892,6 +1305,13 @@ int ss_twr_initiator_custom(void)
             if (fire_request_frames_remaining == 0u)
             {
                 fire_request_code = POLL_MSG_FIRE_NONE;
+#ifdef UWB_BLE_GATT_ENABLED
+                if (ble_gatt_reset_after_fire_window)
+                {
+                    app_log_write("EVENT,ARM_TRIGGER_RESET_TO_BLE");
+                    NVIC_SystemReset();
+                }
+#endif
             }
         }
 
@@ -901,11 +1321,26 @@ int ss_twr_initiator_custom(void)
         dwt_writetxfctrl(sizeof(tx_poll_msg) + FCS_LEN, 0, 1); /* ranging bit = 1 */
 
         /* Immediate TX + auto-enable RX after delay to receive Response */
-        dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED);
+        if (dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED) != DWT_SUCCESS)
+        {
+            dwt_forcetrxoff();
+            dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+            continue;
+        }
 
         /* Wait for good RX, timeout, or RX error */
+    #ifdef UWB_BLE_GATT_ENABLED
+        if (!ble_gatt_wait_for_dw_status(&status_reg,
+            (DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR), 20u))
+        {
+            dwt_forcetrxoff();
+            dwt_writesysstatuslo(DWT_INT_TXFRS_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+            continue;
+        }
+    #else
         waitforsysstatus(&status_reg, NULL,
             (DWT_INT_RXFCG_BIT_MASK | SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR), 0);
+    #endif
 
         frame_seq_nb++;
 
@@ -1061,6 +1496,8 @@ int ss_twr_initiator_custom(void)
                                                valid, dist_filt, dist_smooth,
                                                responder_load_mv, responder_load_connected);
 
+                            safety_service_triggers(valid, dist_smooth, &accel_data);
+
 #ifdef UWB_BLE_ADV_ENABLED
                             if ((uint32_t)(ms - ble_adv_last_ms) >= BLE_ADV_PERIOD_MS)
                             {
@@ -1146,9 +1583,11 @@ int ss_twr_initiator_custom(void)
             dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
         }
 
+#ifndef UWB_BLE_GATT_ENABLED
         if (active_test_profile != UWB_TEST_PROFILE_TURBO_DISTANCE_ONLY)
         {
             Sleep(acquisition_period_ms);
         }
+#endif
     }
 }
