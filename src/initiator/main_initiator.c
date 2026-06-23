@@ -45,6 +45,8 @@
 #ifdef UWB_BLE_GATT_ENABLED
 #include "../ble/ble_nus_bridge.h"
 #include "nrf_sdh.h"
+#include "nrf_soc.h"
+#include "nrf_nvic.h"
 #endif
 
 #define POLL_MSG_PROFILE_IDX      16
@@ -63,6 +65,7 @@
 #define POLL_MSG_FIRE_COUNTDOWN   1u
 #define POLL_MSG_FIRE_IMMEDIATE   2u
 #define BOOTLOADER_DFU_START      0xB1u
+#define BLE_GATT_BOOT_RUN_ARMED   0xA6u
 #define BLE_ADV_PERIOD_MS         100u
 
 #define RESP_MSG_CTRL_OPT_IDX   11
@@ -319,12 +322,12 @@ static void safety_service_triggers(bool distance_valid, float distance_m, const
 }
 
 #ifdef UWB_BLE_GATT_ENABLED
-#define BLE_GATT_COMMAND_WINDOW_MS 10000u
 #define BLE_GATT_ACK_DISCONNECT_DELAY_MS 1000u
 
 static bool ble_gatt_admin_shutdown_pending = false;
 static uint32_t ble_gatt_admin_shutdown_ms = 0u;
 static bool ble_gatt_shutdown_after_settings_write = false;
+static bool ble_gatt_shutdown_run_armed_after_reset = false;
 static bool ble_gatt_admin_enabled = false;
 
 static uint32_t rtc2_ms(void)
@@ -371,6 +374,16 @@ static bool ble_gatt_service_admin_shutdown(uint32_t now_ms)
 
     if ((int32_t)(now_ms - ble_gatt_admin_shutdown_ms) >= 0)
     {
+        if (ble_gatt_shutdown_run_armed_after_reset)
+        {
+            (void)sd_power_gpregret_clr(0u, 0xFFu);
+            (void)sd_power_gpregret_set(0u, BLE_GATT_BOOT_RUN_ARMED);
+            (void)sd_nvic_SystemReset();
+        }
+        else
+        {
+            NRF_POWER->GPREGRET = 0u;
+        }
         NVIC_SystemReset();
     }
     return true;
@@ -412,6 +425,7 @@ static void ble_gatt_service_settings_write(void)
         if (ble_gatt_shutdown_after_settings_write)
         {
             ble_gatt_shutdown_after_settings_write = false;
+            ble_gatt_shutdown_run_armed_after_reset = (settings.arm_mode != UWB_SETTINGS_ARM_NONE);
             ble_gatt_schedule_admin_shutdown();
         }
     }
@@ -422,6 +436,7 @@ static void ble_gatt_service_settings_write(void)
         if (ble_gatt_shutdown_after_settings_write)
         {
             ble_gatt_shutdown_after_settings_write = false;
+            ble_gatt_shutdown_run_armed_after_reset = false;
             ble_gatt_schedule_admin_shutdown();
         }
     }
@@ -1152,17 +1167,25 @@ int ss_twr_initiator_custom(void)
     uwb_persistent_settings_init();
     {
         uwb_persistent_settings_t settings = uwb_persistent_settings_get();
-        safety_apply_persistent_arm_mode(settings.arm_mode);
-        if (settings.arm_mode == UWB_SETTINGS_ARM_NONE)
+        uint32_t boot_mode = NRF_POWER->GPREGRET;
+        bool run_armed_boot = (boot_mode == BLE_GATT_BOOT_RUN_ARMED);
+        if (run_armed_boot)
         {
-            ble_nus_bridge_init();
-            ble_gatt_admin_enabled = true;
-            app_log_write("BLE_GATT,READY");
+            NRF_POWER->GPREGRET = 0u;
+        }
+
+        if ((settings.arm_mode != UWB_SETTINGS_ARM_NONE) && run_armed_boot)
+        {
+            safety_apply_persistent_arm_mode(settings.arm_mode);
+            ble_gatt_admin_enabled = false;
+            app_log_write("BLE_GATT,SKIP_ARMED");
         }
         else
         {
-            ble_gatt_admin_enabled = false;
-            app_log_write("BLE_GATT,SKIP_ARMED");
+            safety_disarm();
+            ble_nus_bridge_init();
+            ble_gatt_admin_enabled = true;
+            app_log_write("BLE_GATT,READY");
         }
     }
 #ifdef UWB_SOFTDEVICE_VTOR_DIRECT
@@ -1188,8 +1211,6 @@ int ss_twr_initiator_custom(void)
 #ifdef UWB_BLE_GATT_ENABLED
     if (ble_gatt_admin_enabled)
     {
-            static bool ble_gatt_command_window_active = false;
-            static uint32_t ble_gatt_command_window_start_ms = 0u;
             uint32_t now_ms = rtc2_ms();
 
             if (ble_gatt_service_admin_shutdown(now_ms))
@@ -1198,34 +1219,17 @@ int ss_twr_initiator_custom(void)
                 continue;
             }
 
-            if (!ble_nus_bridge_is_advertising_enabled())
-            {
-                ble_gatt_command_window_active = false;
-            }
-            else
+            if (ble_nus_bridge_is_advertising_enabled())
             {
                 if (!ble_nus_bridge_is_client_ready())
                 {
-                    ble_gatt_command_window_active = false;
                     __WFE();
                     continue;
                 }
 
-                if (!ble_gatt_command_window_active)
-                {
-                    ble_gatt_command_window_active = true;
-                    ble_gatt_command_window_start_ms = now_ms;
-                }
-
-                if ((uint32_t)(now_ms - ble_gatt_command_window_start_ms) < BLE_GATT_COMMAND_WINDOW_MS)
-                {
-                    process_app_commands();
-                    __WFE();
-                    continue;
-                }
-
-                app_log_write("BLE_GATT,WINDOW_TIMEOUT");
-                NVIC_SystemReset();
+                process_app_commands();
+                __WFE();
+                continue;
             }
         }
 #endif
@@ -1496,7 +1500,7 @@ int ss_twr_initiator_custom(void)
                                                valid, dist_filt, dist_smooth,
                                                responder_load_mv, responder_load_connected);
 
-                            safety_service_triggers(valid, dist_smooth, &accel_data);
+                            safety_service_triggers(valid, dist_filt, &accel_data);
 
 #ifdef UWB_BLE_ADV_ENABLED
                             if ((uint32_t)(ms - ble_adv_last_ms) >= BLE_ADV_PERIOD_MS)
