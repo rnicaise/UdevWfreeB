@@ -7,6 +7,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
+import android.bluetooth.BluetoothGattDescriptor
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothManager
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
@@ -62,6 +67,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import timber.log.Timber
 import java.io.IOException
+import java.util.UUID
 import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.sqrt
@@ -85,6 +91,9 @@ class UwbForegroundService : Service() {
     private var activeDriver: UsbSerialDriver? = null
     private var activePort: UsbSerialPort? = null
     private var bleScanCallback: ScanCallback? = null
+    private var activeBleGatt: BluetoothGatt? = null
+    private var bleCommandCharacteristic: BluetoothGattCharacteristic? = null
+    private var bleGattAccumulator = StringBuilder()
     private var bleSampleCounterEpoch = 0L
     private var bleLastCounter16: Int? = null
     private var bleLastStatusElapsedMs = 0L
@@ -196,6 +205,7 @@ class UwbForegroundService : Service() {
             ACTION_CONNECT -> {
                 shouldConnect = true
                 closeBleScan()
+                closeBleGatt()
                 RuntimeStore.setLinkState(LinkState.CONNECTING, "Connecting")
                 if (connectJob?.isActive != true) {
                     connectJob = serviceScope.launch { connectLoop() }
@@ -210,6 +220,7 @@ class UwbForegroundService : Service() {
                 disarmSafetyTrigger("Disconnected")
                 closePort()
                 closeBleScan()
+                closeBleGatt()
                 RuntimeStore.setLinkState(LinkState.DISCONNECTED, "Disconnected")
                 stopSelf()
             }
@@ -239,6 +250,7 @@ class UwbForegroundService : Service() {
         disarmSafetyTrigger("Service stopped")
         closePort()
         closeBleScan()
+        closeBleGatt()
 
         connectJob?.cancel()
         readJob?.cancel()
@@ -533,6 +545,10 @@ class UwbForegroundService : Service() {
 
     private suspend fun sendCommandSlowly(command: String): Boolean {
         return commandMutex.withLock {
+            if (RuntimeStore.state.value.linkSource == LinkSource.BLE_GATT) {
+                return@withLock writeBleCommand(command)
+            }
+
             val port = activePort ?: return@withLock false
             try {
                 val payload = command.toByteArray(Charsets.US_ASCII)
@@ -572,6 +588,7 @@ class UwbForegroundService : Service() {
     private fun startBleScan() {
         shouldConnect = false
         closePort()
+        closeBleGatt()
         disarmSafetyTrigger("BLE scan")
 
         if (!hasBleScanPermission()) {
@@ -604,10 +621,14 @@ class UwbForegroundService : Service() {
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 consumeBleScanResult(result)
+                maybeConnectBleGatt(result)
             }
 
             override fun onBatchScanResults(results: MutableList<ScanResult>) {
-                results.forEach { consumeBleScanResult(it) }
+                results.forEach {
+                    consumeBleScanResult(it)
+                    maybeConnectBleGatt(it)
+                }
             }
 
             override fun onScanFailed(errorCode: Int) {
@@ -690,6 +711,155 @@ class UwbForegroundService : Service() {
             bleLastStatusElapsedMs = nowElapsed
             RuntimeStore.setLinkState(LinkState.CONNECTED, "BLE UWB ${String.format("%.2f", distanceM)} m", LinkSource.BLE_ADV)
         }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun maybeConnectBleGatt(result: ScanResult) {
+        if (activeBleGatt != null || bleCommandCharacteristic != null) {
+            return
+        }
+        if (!hasBleConnectPermission()) {
+            return
+        }
+        if (!result.isConnectable) {
+            return
+        }
+        val record = result.scanRecord ?: return
+        val name = record.deviceName ?: return
+        if (name != BLE_DEVICE_NAME) {
+            return
+        }
+
+        RuntimeStore.setLinkState(LinkState.CONNECTING, "BLE GATT connecting", LinkSource.BLE_ADV)
+        closeBleScan()
+        activeBleGatt = result.device.connectGatt(this, false, bleGattCallback)
+    }
+
+    private val bleGattCallback = object : BluetoothGattCallback() {
+        @SuppressLint("MissingPermission")
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE GATT error: $status")
+                closeBleGatt()
+                return
+            }
+
+            when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> {
+                    RuntimeStore.setLinkState(LinkState.CONNECTING, "BLE GATT discovering", LinkSource.BLE_GATT)
+                    gatt.discoverServices()
+                }
+                BluetoothProfile.STATE_DISCONNECTED -> {
+                    RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE GATT disconnected")
+                    closeBleGatt()
+                }
+            }
+        }
+
+        @SuppressLint("MissingPermission")
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE services error: $status")
+                closeBleGatt()
+                return
+            }
+
+            val service = gatt.getService(NUS_SERVICE_UUID)
+            val command = service?.getCharacteristic(NUS_RX_CHAR_UUID)
+            val notify = service?.getCharacteristic(NUS_TX_CHAR_UUID)
+            if (command == null) {
+                RuntimeStore.setLinkState(LinkState.CONNECTED, "BLE monitor only", LinkSource.BLE_ADV)
+                return
+            }
+
+            bleCommandCharacteristic = command
+            connectedRole = ConnectedUwbRole.INITIATOR
+            RuntimeStore.onConnected("BLE GATT connected", LinkSource.BLE_GATT)
+            RuntimeStore.setConnectedRole(ConnectedUwbRole.INITIATOR)
+
+            if (notify != null) {
+                gatt.setCharacteristicNotification(notify, true)
+                val descriptor = notify.getDescriptor(CLIENT_CHARACTERISTIC_CONFIG_UUID)
+                if (descriptor != null) {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                        @Suppress("DEPRECATION")
+                        gatt.writeDescriptor(descriptor)
+                    }
+                }
+            }
+        }
+
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            if (characteristic.uuid == NUS_TX_CHAR_UUID) {
+                consumeBleText(value.toString(Charsets.US_ASCII))
+            }
+        }
+
+        @Deprecated("Deprecated in Android API")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (characteristic.uuid == NUS_TX_CHAR_UUID) {
+                @Suppress("DEPRECATION")
+                consumeBleText(characteristic.value.toString(Charsets.US_ASCII))
+            }
+        }
+    }
+
+    private fun consumeBleText(text: String) {
+        bleGattAccumulator.append(text)
+        if (bleGattAccumulator.length > MAX_ACCUMULATED_SERIAL_CHARS) {
+            bleGattAccumulator.clear()
+            RuntimeStore.onInvalidLine()
+            return
+        }
+
+        var newlineIndex = bleGattAccumulator.indexOf("\n")
+        while (newlineIndex >= 0) {
+            val line = bleGattAccumulator.substring(0, newlineIndex).trim('\r', '\n', ' ')
+            bleGattAccumulator.delete(0, newlineIndex + 1)
+            consumeLine(line)
+            newlineIndex = bleGattAccumulator.indexOf("\n")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun writeBleCommand(command: String): Boolean {
+        val gatt = activeBleGatt ?: return false
+        val characteristic = bleCommandCharacteristic ?: return false
+        if (!hasBleConnectPermission()) {
+            RuntimeStore.setLinkState(LinkState.DISCONNECTED, "BLE connect permission missing")
+            return false
+        }
+
+        val payload = command.toByteArray(Charsets.US_ASCII)
+        characteristic.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        val accepted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            gatt.writeCharacteristic(characteristic, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) == BluetoothGatt.GATT_SUCCESS
+        } else {
+            @Suppress("DEPRECATION")
+            characteristic.value = payload
+            @Suppress("DEPRECATION")
+            gatt.writeCharacteristic(characteristic)
+        }
+        if (accepted) {
+            Timber.i("Sent BLE command: %s", command.trim())
+        }
+        return accepted
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun closeBleGatt() {
+        bleCommandCharacteristic = null
+        bleGattAccumulator.clear()
+        try {
+            activeBleGatt?.disconnect()
+            activeBleGatt?.close()
+        } catch (_: Exception) {
+        }
+        activeBleGatt = null
     }
 
     private fun unwrapBleCounter(counter16: Int): Long {
@@ -855,6 +1025,11 @@ class UwbForegroundService : Service() {
         }
     }
 
+    private fun hasBleConnectPermission(): Boolean {
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+    }
+
     private fun registerUsbReceiver() {
         val filter = IntentFilter().apply {
             addAction(ACTION_USB_PERMISSION)
@@ -941,6 +1116,10 @@ class UwbForegroundService : Service() {
         private const val BLE_STATUS_INTERVAL_MS = 1_000L
         private const val BLE_COUNTER_WRAP = 65_536L
         private const val BLE_COUNTER_WRAP_HALF = 32_768
+        private val NUS_SERVICE_UUID: UUID = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e")
+        private val NUS_RX_CHAR_UUID: UUID = UUID.fromString("6e400002-b5a3-f393-e0a9-e50e24dcca9e")
+        private val NUS_TX_CHAR_UUID: UUID = UUID.fromString("6e400003-b5a3-f393-e0a9-e50e24dcca9e")
+        private val CLIENT_CHARACTERISTIC_CONFIG_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val MAX_ACCUMULATED_SERIAL_CHARS = 65536
         private const val UI_PUSH_INTERVAL_MS = 50L
         private const val PLAUSIBILITY_RESYNC_REJECTS = 50

@@ -47,6 +47,7 @@ enum class LinkSource {
     NONE,
     USB,
     BLE_ADV,
+    BLE_GATT,
 }
 
 enum class ConnectedUwbRole {

@@ -44,7 +44,16 @@ Decoded packet fields:
 - byte 2-3: unsigned sample counter, little-endian
 - scan RSSI is shown as the radio RSSI field
 
-This mode is monitor-only. Commands such as FIRE and arming remain USB-only until the product firmware exposes a connectable GATT control plane.
+With the current firmware this mode is monitor-only because `BLE_ADV` is non-connectable. The Android app is also prepared for the next firmware step: if the `UWB` peripheral is connectable and exposes Nordic UART Service, the app switches to `BLE GATT` and sends the same command strings used over USB.
+
+BLE command service expected by the Android app:
+
+- Service UUID: `6e400001-b5a3-f393-e0a9-e50e24dcca9e`
+- Phone-to-device write characteristic: `6e400002-b5a3-f393-e0a9-e50e24dcca9e`
+- Device-to-phone notify characteristic: `6e400003-b5a3-f393-e0a9-e50e24dcca9e`
+- Commands: `PYRO,FIRE`, `PYRO,FIRE_NOW`, `CFG,GET_ROLE`, plus future config commands
+
+FIRE and arming controls are enabled only for USB or `BLE GATT`. Plain `BLE` advertising remains read-only.
 
 ## Product direction: connectable GATT
 
