@@ -64,6 +64,10 @@ if(NOT UWB_ROLE STREQUAL "initiator" AND NOT UWB_ROLE STREQUAL "responder")
     message(FATAL_ERROR "UWB_ROLE must be 'initiator' or 'responder' (received: ${UWB_ROLE})")
 endif()
 
+if(NOT DEFINED UWB_PURE)
+    set(UWB_PURE OFF CACHE BOOL "Pure UWB build: no BLE, no IMU, no pyro")
+endif()
+
 if(NOT DEFINED UWB_ACCEL_TARGET)
     set(UWB_ACCEL_TARGET "legacy" CACHE STRING "Accelerometer hardware target: legacy|gena|auto")
 endif()
@@ -182,8 +186,15 @@ set_source_files_properties(
 )
 
 # Output names.
-set(TARGET_ELF uwb_${UWB_ROLE}_${UWB_ACCEL_TARGET}.elf)
-set(TARGET_HEX uwb_${UWB_ROLE}_${UWB_ACCEL_TARGET}.hex)
+if(UWB_PURE)
+    set(TARGET_ELF uwb_${UWB_ROLE}_pure.elf)
+    set(TARGET_HEX uwb_${UWB_ROLE}_pure.hex)
+    set(TARGET_BASENAME uwb_${UWB_ROLE}_pure)
+else()
+    set(TARGET_ELF uwb_${UWB_ROLE}_${UWB_ACCEL_TARGET}.elf)
+    set(TARGET_HEX uwb_${UWB_ROLE}_${UWB_ACCEL_TARGET}.hex)
+    set(TARGET_BASENAME uwb_${UWB_ROLE}_${UWB_ACCEL_TARGET})
+endif()
 
 # Sources.
 # Sources platform — custom DWM3001CDK (single DW3000, no SPI2/IRQ2)
@@ -220,6 +231,19 @@ set(SDK_SOURCES
 )
 
 # Project sources.
+if(UWB_PURE)
+    # Pure UWB: no IMU, no pyro, no radio-quality diagnostics, no profiles.
+    set(PROJECT_SOURCES
+        ${CMAKE_SOURCE_DIR}/src/common/ranging.c
+        ${CMAKE_SOURCE_DIR}/src/platform/nrf_hfxo.c
+        ${CMAKE_SOURCE_DIR}/src/uart/uart_log.c
+    )
+    if(UWB_ROLE STREQUAL "initiator")
+        list(APPEND PROJECT_SOURCES ${CMAKE_SOURCE_DIR}/src/initiator/main_initiator_pure.c)
+    else()
+        list(APPEND PROJECT_SOURCES ${CMAKE_SOURCE_DIR}/src/responder/main_responder_pure.c)
+    endif()
+else()
 set(PROJECT_SOURCES
     ${CMAKE_SOURCE_DIR}/src/common/ranging.c
     ${CMAKE_SOURCE_DIR}/src/common/radio_quality.c
@@ -245,6 +269,7 @@ elseif(UWB_ROLE STREQUAL "responder")
         ${CMAKE_SOURCE_DIR}/src/accel/accel.c
         ${CMAKE_SOURCE_DIR}/src/uart/uart_log.c
     )
+endif()
 endif()
 
 if(UWB_BLE_ADV_ENABLED)
@@ -290,6 +315,7 @@ set(INCLUDE_DIRS
     ${CMAKE_SOURCE_DIR}/src/board
     ${CMAKE_SOURCE_DIR}/src/common
     ${CMAKE_SOURCE_DIR}/src/accel
+    ${CMAKE_SOURCE_DIR}/src/platform
     ${CMAKE_SOURCE_DIR}/src/uart
     ${CMAKE_SOURCE_DIR}/src/ble
 
@@ -393,6 +419,9 @@ target_compile_definitions(${TARGET_ELF} PRIVATE
     # Role selection for main.c.
     $<$<STREQUAL:${UWB_ROLE},initiator>:UWB_ROLE_INITIATOR>
     $<$<STREQUAL:${UWB_ROLE},responder>:UWB_ROLE_RESPONDER>
+    # Pure UWB build: no BLE, no IMU, HFXO forced, UART at 1 Mbps.
+    $<$<BOOL:${UWB_PURE}>:UWB_PURE>
+    $<$<BOOL:${UWB_PURE}>:UWB_UART_BAUD_1M>
     # Accelerometer hardware generation selection.
     $<$<STREQUAL:${UWB_ACCEL_TARGET},legacy>:UWB_ACCEL_TARGET_LEGACY>
     $<$<STREQUAL:${UWB_ACCEL_TARGET},gena>:UWB_ACCEL_TARGET_GENA>
@@ -442,7 +471,7 @@ if(UWB_BLE_GATT_ENABLED)
 endif()
 
 target_link_options(${TARGET_ELF} PRIVATE
-    -Wl,-Map=$<TARGET_FILE_DIR:${TARGET_ELF}>/uwb_${UWB_ROLE}_${UWB_ACCEL_TARGET}.map
+    -Wl,-Map=$<TARGET_FILE_DIR:${TARGET_ELF}>/${TARGET_BASENAME}.map
 )
 
 set_target_properties(${TARGET_ELF} PROPERTIES

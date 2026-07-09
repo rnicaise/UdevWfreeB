@@ -250,9 +250,39 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
+        },
+        {
+            "name": "initiator_pure_debug",
+            "inherits": "default",
+            "displayName": "Initiator Pure UWB (Debug)",
+            "description": "Module A \u00e9pur\u00e9 \u2014 SS-TWR seul, sans BLE/IMU/pyro, HFXO + UART 1 Mbps",
+            "cacheVariables": {
+                "UWB_ROLE": "initiator",
+                "UWB_PURE": "ON",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "responder_pure_debug",
+            "inherits": "default",
+            "displayName": "Responder Pure UWB (Debug)",
+            "description": "Module B \u00e9pur\u00e9 \u2014 SS-TWR seul, sans BLE/IMU/pyro, HFXO + UART 1 Mbps",
+            "cacheVariables": {
+                "UWB_ROLE": "responder",
+                "UWB_PURE": "ON",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
         }
     ],
     "buildPresets": [
+        {
+            "name": "initiator_pure_debug",
+            "configurePreset": "initiator_pure_debug"
+        },
+        {
+            "name": "responder_pure_debug",
+            "configurePreset": "responder_pure_debug"
+        },
         {
             "name": "initiator_debug",
             "configurePreset": "initiator_debug"

@@ -161,7 +161,12 @@ void uart_log_init(void)
     NRF_UARTE0->PSEL.RTS = 0xFFFFFFFF;
 
     NRF_UARTE0->CONFIG = 0;
+#if defined(UWB_UART_BAUD_1M)
+    /* Qorvo advice: faster offload so UART never bounds the ranging rate. */
+    NRF_UARTE0->BAUDRATE = UARTE_BAUDRATE_BAUDRATE_Baud1M;
+#else
     NRF_UARTE0->BAUDRATE = UARTE_BAUDRATE_BAUDRATE_Baud460800;
+#endif
 
     NRF_UARTE0->ENABLE = UARTE_ENABLE_ENABLE_Enabled;
 

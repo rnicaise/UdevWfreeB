@@ -29,8 +29,14 @@ void test_run_info(unsigned char *data)
 #endif
 }
 
-/* Ranging function - defined in main_initiator.c or main_responder.c */
-#if defined(UWB_ROLE_INITIATOR)
+/* Ranging function - defined in the role-specific main file */
+#if defined(UWB_PURE) && defined(UWB_ROLE_INITIATOR)
+extern int ss_twr_initiator_pure(void);
+#define RANGING_ENTRY ss_twr_initiator_pure
+#elif defined(UWB_PURE) && defined(UWB_ROLE_RESPONDER)
+extern int ss_twr_responder_pure(void);
+#define RANGING_ENTRY ss_twr_responder_pure
+#elif defined(UWB_ROLE_INITIATOR)
 extern int ss_twr_initiator_custom(void);
 #define RANGING_ENTRY ss_twr_initiator_custom
 #elif defined(UWB_ROLE_RESPONDER)
@@ -40,8 +46,19 @@ extern int ss_twr_responder_custom(void);
 #error "Define UWB_ROLE_INITIATOR or UWB_ROLE_RESPONDER"
 #endif
 
+#if defined(UWB_PURE)
+#include "nrf_hfxo.h"
+#endif
+
 int main(void)
 {
+#if defined(UWB_PURE)
+    /* Qorvo advice: run the CPU/peripherals from the external 32 MHz
+     * crystal (HFXO) instead of the internal 64 MHz RC before any
+     * DW3000 access, so SPI timing and timestamps are accurate. */
+    nrf_hfxo_start_blocking();
+#endif
+
     /* Initialize RTT for printf -> SEGGER RTT */
     qio_init();
 
