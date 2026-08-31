@@ -87,6 +87,7 @@
   <dl class="kv">
     <dt>Nom</dt><dd id="stName">—</dd>
     <dt>Rôle</dt><dd id="stRole">—</dd>
+    <dt>Firmware</dt><dd id="stFw">—</dd>
     <dt>Profil UWB</dt><dd id="stProfile">—</dd>
     <dt>TX power</dt><dd id="stTxpwr">—</dd>
     <dt>Armement</dt><dd id="stArm">—</dd>
@@ -128,17 +129,20 @@
 </div>
 
 <div class="card">
-  <h2>Armement (persisté en flash)</h2>
-  <div class="row">
-    <button id="btnArmDist" disabled>Armer distance 2 m</button>
-    <button id="btnArmTilt" disabled>Armer inclinaison 50°</button>
+  <h2>Logique de déclenchement (persistée en flash)</h2>
+  <div id="ruleRows"></div>
+  <div class="row" style="margin-top:8px">
+    <button id="btnRuleAdd" disabled>+ Condition</button>
+    <button id="btnRuleArm" disabled>Armer</button>
     <button id="btnDisarm" disabled>Désarmer</button>
   </div>
   <div class="row">
-    <button id="btnFire" class="danger" disabled>FIRE immédiat</button>
+    <button id="btnFire" class="danger" disabled>Tester la mise à feu</button>
     <button id="btnDfu" disabled>Redémarrer en DFU</button>
   </div>
-  <div class="note">Après sauvegarde d'un armement, le boîtier reset et saute la fenêtre BLE au boot suivant tant qu'il est armé.</div>
+  <div class="note">Chaque condition doit rester vraie pendant sa durée (0 = immédiat).
+    ET = conditions simultanées (prioritaire sur OU). Inclinaison mesurée par rapport à la verticale.
+    Après armement, le boîtier reset et saute la fenêtre BLE au boot suivant tant qu'il est armé.</div>
 </div>
 
 <div class="card">
@@ -155,19 +159,20 @@
   </div>
   <div class="note">Package .zip signé (nrfutil). Étape 1 : redémarre le boîtier en mode DFU.
     Étape 2 : choisir « UWBR_DFU » dans la fenêtre Bluetooth pour flasher.
-    Les chutes enregistrées peuvent être perdues pendant la mise à jour.</div>
+    Les captures boîte noire peuvent être perdues pendant la mise à jour.</div>
 </div>
 
 <div class="card">
-  <h2>Boîte noire — chutes enregistrées</h2>
+  <h2>Boîte noire — déclenchements enregistrés</h2>
   <div class="row">
-    <button id="btnLogList" disabled>Lister les chutes</button>
+    <button id="btnLogList" disabled>Lister les déclenchements</button>
     <button id="btnLogClear" class="danger" disabled>Tout effacer</button>
     <span id="logStatus" class="note"></span>
   </div>
   <div id="logSlots" style="margin-top:8px"></div>
-  <div class="note">Chaque chute = ~5 s avant + ~1 s après le franchissement du seuil
-    de distance (1 m en test), à pleine cadence. 6 emplacements en rotation.</div>
+  <div class="note">Une capture est créée à chaque déclenchement de la règle (ou
+    « Tester la mise à feu ») : ~4,5 s avant + ~0,5 s après, à pleine cadence,
+    avec distance UWB + accéléromètres émetteur et récepteur. 3 emplacements en rotation.</div>
 </div>
 
 <div class="card">
@@ -191,7 +196,7 @@ let device = null, rxChar = null, rxBuffer = "";
 const $ = id => document.getElementById(id);
 const logEl = $("log");
 const connectedButtons = ["btnDisconnect","btnRefresh","btnSetProfile","btnSetTxpwr",
-  "btnArmDist","btnArmTilt","btnDisarm","btnFire","btnDfu","btnSend","cmdInput",
+  "btnRuleAdd","btnRuleArm","btnDisarm","btnFire","btnDfu","btnSend","cmdInput",
   "btnSetName","nameInput","btnLogList","btnLogClear"];
 
 if (!navigator.bluetooth) $("unsupported").style.display = "block";
@@ -226,13 +231,18 @@ function handleLine(text) {
   log(text, cls);
   // Mise à jour de l'état affiché
   if (text.startsWith("ROLE,"))            $("stRole").textContent = text.slice(5);
+  else if (text.startsWith("FW,"))         { const p = text.slice(3).split(","); $("stFw").textContent = `v${p[0]} (${p[1] || "?"})`; }
   else if (text.startsWith("NAME,"))       { $("stName").textContent = text.slice(5); $("nameInput").value = text.slice(5); }
   else if (text.startsWith("PROFILE,"))    $("stProfile").textContent = text.slice(8);
   else if (text.startsWith("TXPWR,"))      $("stTxpwr").textContent = text.slice(6);
+  else if (text.startsWith("ARM,RULE,")) $("stArm").textContent = ruleToText(text.slice(9));
   else if (text.startsWith("ARM,") && !text.startsWith("ARM,WRITE")) $("stArm").textContent = text.slice(4);
   else if (text.startsWith("ACK,TXPWR,"))  $("stTxpwr").textContent = text.split(",")[2];
   else if (text.startsWith("ACK,PROFILE_SWITCH_ARMED,")) $("stProfile").textContent = text.split(",")[2];
-  else if (text.startsWith("ACK,ARM,"))    $("stArm").textContent = text.split(",")[2];
+  else if (text.startsWith("ACK,ARM,")) {
+    $("stArm").textContent = text.split(",")[2];
+    if (text.includes("SAVED")) log("Sauvegardé — le boîtier redémarre et se déconnecte", "sys");
+  }
   else if (text.startsWith("ACK,NAME,"))   $("stName").textContent = text.split(",")[2];
 }
 
@@ -257,7 +267,7 @@ async function connect() {
     setState("connecting", "Recherche…");
     device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [NUS_SERVICE] }],
-      optionalServices: [NUS_SERVICE],
+      optionalServices: [NUS_SERVICE, DFU_SERVICE],
     });
     device.addEventListener("gattserverdisconnected", onDisconnected);
     setState("connecting", "Connexion GATT…");
@@ -276,18 +286,32 @@ async function connect() {
   }
 }
 
-async function send(cmd) {
-  if (!rxChar) return;
-  try {
+/* Web Bluetooth n'autorise qu'une écriture GATT à la fois : file d'attente.
+ * Fragments de 20 octets max (MTU BLE 23 par défaut, pas de long-write NUS) ;
+ * le firmware réassemble jusqu'au \n. */
+let sendQueue = Promise.resolve();
+function send(cmd) {
+  if (!rxChar) return Promise.resolve();
+  sendQueue = sendQueue.then(async () => {
+    if (!rxChar) return;
     log(`> ${cmd}`, "tx");
-    await rxChar.writeValue(new TextEncoder().encode(cmd + "\n"));
-  } catch (e) {
-    log(`Erreur envoi: ${e.message}`, "rx err");
-  }
+    try {
+      const bytes = new TextEncoder().encode(cmd + "\n");
+      for (let off = 0; off < bytes.length; off += 20) {
+        await Promise.race([
+          rxChar.writeValue(bytes.slice(off, off + 20)),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("timeout écriture (10 s)")), 10000)),
+        ]);
+      }
+    } catch (e) {
+      log(`Erreur envoi: ${e.message}`, "rx err");
+    }
+  });
+  return sendQueue;
 }
 
 async function refresh() {
-  for (const cmd of ["CFG,GET_NAME", "CFG,GET_ROLE", "CFG,GET_PROFILE", "CFG,GET_TXPWR", "ARM,GET"]) {
+  for (const cmd of ["CFG,GET_NAME", "CFG,GET_ROLE", "CFG,GET_FW", "CFG,GET_PROFILE", "CFG,GET_TXPWR", "ARM,GET"]) {
     await send(cmd);
     await new Promise(r => setTimeout(r, 150));
   }
@@ -306,12 +330,101 @@ $("btnSetName").onclick = () => {
   send(`CFG,NAME,${name}`);
 };
 $("btnSetTxpwr").onclick = () => send(`CFG,TXPWR,${$("selTxpwr").value}`);
-$("btnArmDist").onclick = () => send("ARM,DIST,2.00");
-$("btnArmTilt").onclick = () => send("ARM,TILT,50");
+
+// --- Builder de logique de déclenchement ---
+let ruleConds = [{ src: "DIST", op: "GT", val: 2.0, ms: 0, link: "END" }];
+
+function ruleUnit(src) { return src === "TILT" ? "°" : "m"; }
+
+function renderRule() {
+  const host = $("ruleRows");
+  host.innerHTML = "";
+  ruleConds.forEach((c, i) => {
+    const row = document.createElement("div");
+    row.className = "row";
+    row.style.marginTop = "6px";
+    row.innerHTML = `
+      ${i > 0 ? `<select data-i="${i - 1}" data-k="link">
+        <option value="AND"${ruleConds[i - 1].link === "AND" ? " selected" : ""}>ET</option>
+        <option value="OR"${ruleConds[i - 1].link === "OR" ? " selected" : ""}>OU</option>
+      </select>` : `<span style="color:var(--muted)">Si</span>`}
+      <select data-i="${i}" data-k="src">
+        <option value="DIST"${c.src === "DIST" ? " selected" : ""}>Distance</option>
+        <option value="TILT"${c.src === "TILT" ? " selected" : ""}>Inclinaison</option>
+      </select>
+      <select data-i="${i}" data-k="op">
+        <option value="GT"${c.op === "GT" ? " selected" : ""}>&gt;</option>
+        <option value="LT"${c.op === "LT" ? " selected" : ""}>&lt;</option>
+      </select>
+      <input type="number" data-i="${i}" data-k="val" value="${c.val}" step="0.1" min="0" style="width:70px">
+      <span style="color:var(--muted)">${ruleUnit(c.src)} pendant</span>
+      <input type="number" data-i="${i}" data-k="ms" value="${c.ms}" step="50" min="0" style="width:80px">
+      <span style="color:var(--muted)">ms</span>
+      ${ruleConds.length > 1 ? `<button data-del="${i}" title="Supprimer">✕</button>` : ""}`;
+    host.appendChild(row);
+  });
+  host.querySelectorAll("select,input").forEach(el => {
+    el.onchange = () => {
+      const i = +el.dataset.i, k = el.dataset.k;
+      if (k === "val" || k === "ms") ruleConds[i][k] = parseFloat(el.value) || 0;
+      else ruleConds[i][k] = el.value;
+      if (k === "src") renderRule();
+    };
+  });
+  host.querySelectorAll("button[data-del]").forEach(btn => {
+    btn.onclick = () => {
+      ruleConds.splice(+btn.dataset.del, 1);
+      ruleConds[ruleConds.length - 1].link = "END";
+      renderRule();
+    };
+  });
+}
+renderRule();
+
+$("btnRuleAdd").onclick = () => {
+  if (ruleConds.length >= 8) { log("8 conditions maximum", "rx err"); return; }
+  ruleConds[ruleConds.length - 1].link = "AND";
+  ruleConds.push({ src: "TILT", op: "GT", val: 50, ms: 0, link: "END" });
+  renderRule();
+};
+
+$("btnRuleArm").onclick = () => {
+  const parts = [];
+  for (let i = 0; i < ruleConds.length; i++) {
+    const c = ruleConds[i];
+    if (!(c.val >= 0) || !(c.ms >= 0)) { log("Valeur de condition invalide", "rx err"); return; }
+    parts.push(`${c.src},${c.op},${c.val},${Math.round(c.ms)}`);
+    if (i < ruleConds.length - 1) parts.push(c.link === "OR" ? "OR" : "AND");
+  }
+  send(`ARM,RULE,${parts.join(",")}`);
+};
+
+// Décode "RULE,DIST,GT,2.00,500,AND,..." en français + recharge le builder
+function ruleToText(payload) {
+  const p = payload.split(",");
+  const conds = [];
+  const out = [];
+  for (let i = 0; i < p.length;) {
+    const src = p[i], op = p[i + 1], val = parseFloat(p[i + 2]), ms = parseInt(p[i + 3], 10);
+    if (!src || !op || isNaN(val) || isNaN(ms)) break;
+    out.push(`${src === "TILT" ? "Incl." : "Dist."} ${op === "GT" ? ">" : "<"} ${val}${ruleUnit(src)}${ms ? ` pdt ${ms} ms` : ""}`);
+    const cond = { src, op, val, ms, link: "END" };
+    i += 4;
+    if (i < p.length) {
+      cond.link = (p[i] === "OR" || p[i] === "OU") ? "OR" : "AND";
+      out.push(cond.link === "OR" ? "OU" : "ET");
+      i += 1;
+    }
+    conds.push(cond);
+  }
+  if (conds.length) { ruleConds = conds; renderRule(); }
+  return `ARMÉ : ${out.join(" ")}`;
+}
+
 $("btnDisarm").onclick = () => send("ARM,DISARM");
 $("btnDfu").onclick = () => send("BOOT,DFU");
 $("btnFire").onclick = () => {
-  if (confirm("Déclencher FIRE immédiatement ?")) send("PYRO,FIRE_NOW");
+  if (confirm("Tester la mise à feu maintenant ?")) send("PYRO,FIRE_NOW");
 };
 $("btnSend").onclick = () => {
   const cmd = $("cmdInput").value.trim();
@@ -324,7 +437,7 @@ const logRead = { active: false, slot: null, header: null, rows: [], expected: 0
 
 function handleLogListLine(text) {
   if (text === "LOG,END") {
-    $("logStatus").textContent = logSlotsFound ? "" : "Aucune chute enregistrée";
+    $("logStatus").textContent = logSlotsFound ? "" : "Aucun déclenchement enregistré";
     return;
   }
   // LOG,SLOT,<i>,<seq>,<trigger_ms>,<count>,<pre_count>
@@ -334,7 +447,7 @@ function handleLogListLine(text) {
   const row = document.createElement("div");
   row.className = "row";
   const durS = (count / 400).toFixed(1);
-  row.innerHTML = `<span>Chute #${seq} — slot ${slot} · ${count} pts (~${durS} s) · trig t+${(trigMs/1000).toFixed(1)} s</span>`;
+  row.innerHTML = `<span>Déclenchement #${seq} — slot ${slot} · ${count} pts (~${durS} s) · trig t+${(trigMs/1000).toFixed(1)} s</span>`;
   const btn = document.createElement("button");
   btn.textContent = "Télécharger CSV";
   btn.onclick = () => startLogRead(slot, seq);
@@ -350,7 +463,7 @@ function startLogRead(slot, seq) {
   logRead.seq = seq;
   logRead.header = null;
   logRead.rows = [];
-  $("logStatus").textContent = `Lecture chute #${seq}…`;
+  $("logStatus").textContent = `Lecture déclenchement #${seq}…`;
   send(`LOG,READ,${slot}`);
 }
 
@@ -372,17 +485,17 @@ function handleLogLine(text) {
   if (text.startsWith("LOG,END")) {
     logRead.active = false;
     const h = logRead.header || {};
-    const csv = ["ms,dist_raw_mm,dist_filt_mm",
-      `# chute seq=${h.seq} slot=${h.slot} trigger_ms=${h.triggerMs} pre_count=${h.preCount}`,
+    const csv = ["ms,dist_raw_mm,dist_filt_mm,init_ax,init_ay,init_az,resp_ax,resp_ay,resp_az",
+      `# declenchement seq=${h.seq} slot=${h.slot} trigger_ms=${h.triggerMs} pre_count=${h.preCount}`,
       ...logRead.rows].join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `chute-${h.seq || "x"}-${new Date().toISOString().slice(0,19).replace(/[:T]/g,"")}.csv`;
+    a.download = `boitenoire-${h.seq || "x"}-${new Date().toISOString().slice(0,19).replace(/[:T]/g,"")}.csv`;
     a.click();
     URL.revokeObjectURL(a.href);
-    $("logStatus").textContent = `Chute #${h.seq} : ${logRead.rows.length} points exportés`;
-    log(`Chute #${h.seq} téléchargée (${logRead.rows.length} points)`, "sys");
+    $("logStatus").textContent = `Déclenchement #${h.seq} : ${logRead.rows.length} points exportés`;
+    log(`Déclenchement #${h.seq} téléchargé (${logRead.rows.length} points)`, "sys");
   }
 }
 
@@ -393,7 +506,7 @@ $("btnLogList").onclick = () => {
   send("LOG,LIST");
 };
 $("btnLogClear").onclick = () => {
-  if (confirm("Effacer toutes les chutes enregistrées ?")) {
+  if (confirm("Effacer tous les déclenchements enregistrés ?")) {
     $("logSlots").innerHTML = "";
     send("LOG,CLEAR");
   }
@@ -405,7 +518,7 @@ const DFU_CTRL   = "8ec90001-f315-4f60-9fb8-838830daea50";
 const DFU_PACKET = "8ec90002-f315-4f60-9fb8-838830daea50";
 const DFU_PACKET_SIZE = 20;
 
-const dfu = { pkg: null, phase: "idle" };
+const dfu = { pkg: null };
 
 function dfuStatus(text) { $("dfuStatus").textContent = text; }
 function dfuProgress(pct) {
@@ -482,8 +595,6 @@ async function parseDfuPackage(file) {
 $("dfuFile").onchange = async () => {
   const f = $("dfuFile").files[0];
   dfu.pkg = null;
-  dfu.phase = "idle";
-  $("btnDfuStart").textContent = "Mettre à jour";
   if (!f) { $("btnDfuStart").disabled = true; return; }
   try {
     dfu.pkg = await parseDfuPackage(f);
@@ -497,33 +608,51 @@ $("dfuFile").onchange = async () => {
 
 $("btnDfuStart").onclick = async () => {
   if (!dfu.pkg) return;
-  if (dfu.phase === "idle" && rxChar) {
-    // Phase 1 : redémarrer le boîtier en mode DFU
-    await send("BOOT,DFU");
-    dfu.phase = "rebooted";
-    $("btnDfuStart").textContent = "Flasher (choisir UWBR_DFU)";
-    dfuStatus("Boîtier redémarré en DFU — cliquer pour flasher");
-    return;
-  }
-  // Phase 2 (ou boîtier déjà en mode DFU) : connexion bootloader + upload
+  $("btnDfuStart").disabled = true;
   try {
-    await dfuUpload(dfu.pkg);
-    dfu.phase = "idle";
-    $("btnDfuStart").textContent = "Mettre à jour";
+    let server = null;
+    if (rxChar && device) {
+      // Boîtier connecté : reboot en DFU puis reconnexion silencieuse
+      // (le bootloader garde la même adresse BLE — pas de second appairage)
+      const dev = device;
+      dfuStatus("Redémarrage en mode DFU…");
+      log("> BOOT,DFU", "tx");
+      try {
+        await rxChar.writeValue(new TextEncoder().encode("BOOT,DFU\n"));
+      } catch (_) {
+        // Le boîtier reset avant la fin de l'écriture GATT : attendu
+      }
+      await new Promise(r => {
+        if (!dev.gatt.connected) return r();
+        dev.addEventListener("gattserverdisconnected", r, { once: true });
+        setTimeout(r, 5000);
+      });
+      for (let i = 0; i < 15 && !server; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        dfuStatus(`Reconnexion au bootloader… (${i + 1}/15)`);
+        try { server = await dev.gatt.connect(); } catch (_) {}
+      }
+    }
+    if (!server) {
+      // Boîtier déjà en DFU ou reconnexion impossible : sélecteur classique
+      dfuStatus("Choisir UWBR_DFU…");
+      const dev = await navigator.bluetooth.requestDevice({
+        filters: [{ services: [DFU_SERVICE] }],
+        optionalServices: [DFU_SERVICE],
+      });
+      server = await dev.gatt.connect();
+    }
+    await dfuUpload(dfu.pkg, server);
   } catch (e) {
     dfuStatus(`Échec DFU: ${e.message}`);
     dfuProgress(null);
     log(`DFU: ${e.message}`, "rx err");
+  } finally {
+    $("btnDfuStart").disabled = !dfu.pkg;
   }
 };
 
-async function dfuUpload(pkg) {
-  dfuStatus("Recherche du bootloader…");
-  const dev = await navigator.bluetooth.requestDevice({
-    filters: [{ services: [DFU_SERVICE] }],
-    optionalServices: [DFU_SERVICE],
-  });
-  const server = await dev.gatt.connect();
+async function dfuUpload(pkg, server) {
   const service = await server.getPrimaryService(DFU_SERVICE);
   const ctrl = await service.getCharacteristic(DFU_CTRL);
   const packet = await service.getCharacteristic(DFU_PACKET);
@@ -558,6 +687,8 @@ async function dfuUpload(pkg) {
   async function writeData(data, onChunk) {
     for (let i = 0; i < data.length; i += DFU_PACKET_SIZE) {
       await packet.writeValueWithoutResponse(data.subarray(i, i + DFU_PACKET_SIZE));
+      // pacing: macOS/CoreBluetooth perd des paquets WWR envoyés trop vite
+      await new Promise(r => setTimeout(r, 5));
       if (onChunk && (i / DFU_PACKET_SIZE) % 16 === 0) onChunk(i);
     }
   }
@@ -579,15 +710,21 @@ async function dfuUpload(pkg) {
   let crc = 0;
   for (let off = 0; off < pkg.bin.length; off += maxSize) {
     const chunk = pkg.bin.subarray(off, Math.min(off + maxSize, pkg.bin.length));
-    await request(0x01, [0x02, ...u32(chunk.length)]);
-    await writeData(chunk, i => {
-      const pct = ((off + i) / pkg.bin.length) * 100;
-      dfuProgress(pct);
-      dfuStatus(`Transfert… ${((off + i) / 1024).toFixed(0)} / ${(pkg.bin.length / 1024).toFixed(0)} Ko`);
-    });
-    crc = crc32(chunk, crc);
-    r = await request(0x03);
-    if (rd32(r, 0) !== off + chunk.length || rd32(r, 4) !== crc) throw new Error(`CRC firmware @${off}`);
+    const expectCrc = crc32(chunk, crc);
+    let ok = false;
+    for (let retry = 0; retry < 3 && !ok; retry++) {
+      await request(0x01, [0x02, ...u32(chunk.length)]); // CREATE recommence l'objet
+      await writeData(chunk, i => {
+        const pct = ((off + i) / pkg.bin.length) * 100;
+        dfuProgress(pct);
+        dfuStatus(`Transfert… ${((off + i) / 1024).toFixed(0)} / ${(pkg.bin.length / 1024).toFixed(0)} Ko`);
+      });
+      r = await request(0x03);
+      ok = rd32(r, 0) === off + chunk.length && rd32(r, 4) === expectCrc;
+      if (!ok) log(`DFU: retry chunk @${off}`, "sys");
+    }
+    if (!ok) throw new Error(`CRC firmware @${off}`);
+    crc = expectCrc;
     await request(0x04);
   }
   dfuProgress(100);

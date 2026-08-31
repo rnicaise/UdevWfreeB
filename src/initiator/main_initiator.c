@@ -33,6 +33,8 @@
 #include "../common/ranging.h"
 #include "../common/uwb_profiles.h"
 #include "../common/radio_quality.h"
+#include "../common/uwb_arm_rule.h"
+#include <math.h>
 #ifdef UWB_BLE_GATT_ENABLED
 #include "../common/uwb_persistent_settings.h"
 #include "../common/uwb_event_log.h"
@@ -184,24 +186,13 @@ static const uwb_runtime_profile_t *active_profile = NULL;
 static uint32_t ble_adv_last_ms = 0u;
 #endif
 static char output_buf[320];
-static char cmd_buf[96];
+static char cmd_buf[256];
 
-typedef enum
-{
-    SAFETY_ARM_NONE = 0,
-    SAFETY_ARM_DISTANCE_2M,
-    SAFETY_ARM_TILT_50
-} safety_arm_mode_t;
-
-#define SAFETY_DISTANCE_TRIGGER_M      (2.0f)
-#define SAFETY_TILT_COS_50_DEG         (0.64278761)
 #define SAFETY_MIN_ACCEL_NORM_SQ       (40000)
 
-static safety_arm_mode_t safety_arm_mode = SAFETY_ARM_NONE;
-static bool safety_tilt_baseline_valid = false;
-static int16_t safety_tilt_baseline_x = 0;
-static int16_t safety_tilt_baseline_y = 0;
-static int16_t safety_tilt_baseline_z = 0;
+static uwb_arm_rule_t safety_rule;
+static bool safety_cond_tracking[UWB_ARM_RULE_MAX_CONDS];
+static uint32_t safety_cond_since_ms[UWB_ARM_RULE_MAX_CONDS];
 
 static void app_log_write(const char *line);
 
@@ -217,25 +208,37 @@ static bool safety_accel_is_usable(const accel_data_t *sample)
 
 static void safety_disarm(void)
 {
-    safety_arm_mode = SAFETY_ARM_NONE;
-    safety_tilt_baseline_valid = false;
+    memset(&safety_rule, 0, sizeof(safety_rule));
+    memset(safety_cond_tracking, 0, sizeof(safety_cond_tracking));
+}
+
+static void safety_apply_rule(const uwb_arm_rule_t *rule)
+{
+    safety_disarm();
+    safety_rule = *rule;
+}
+
+/* Tilt from absolute vertical: angle between the accel vector (gravity in
+ * device frame) and the board Z axis, in millidegrees (0 = board level). */
+static bool safety_tilt_millideg(const accel_data_t *sample, int32_t *out_millideg)
+{
+    float norm;
+    float c;
+
+    if (!safety_accel_is_usable(sample))
+    {
+        return false;
+    }
+    norm = sqrtf((float)safety_accel_norm_sq(sample->x, sample->y, sample->z));
+    c = (float)sample->z / norm;
+    if (c > 1.0f)  c = 1.0f;
+    if (c < -1.0f) c = -1.0f;
+    *out_millideg = (int32_t)(acosf(c) * (180000.0f / 3.14159265f));
+    return true;
 }
 
 #ifdef UWB_BLE_GATT_ENABLED
 static bool ble_gatt_reset_after_fire_window = false;
-
-static void safety_apply_persistent_arm_mode(uint32_t arm_mode)
-{
-    safety_disarm();
-    if (arm_mode == UWB_SETTINGS_ARM_DISTANCE_2M)
-    {
-        safety_arm_mode = SAFETY_ARM_DISTANCE_2M;
-    }
-    else if (arm_mode == UWB_SETTINGS_ARM_TILT_50)
-    {
-        safety_arm_mode = SAFETY_ARM_TILT_50;
-    }
-}
 #endif
 
 static void safety_request_fire_now(const char *event)
@@ -244,6 +247,8 @@ static void safety_request_fire_now(const char *event)
     fire_request_code = POLL_MSG_FIRE_IMMEDIATE;
     safety_disarm();
 #ifdef UWB_BLE_GATT_ENABLED
+    /* Freeze the black box: pre-trigger history + short post-trigger tail. */
+    uwb_event_log_trigger((uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u));
     if (!uwb_persistent_settings_write_pending())
     {
         (void)uwb_persistent_settings_write_arm(UWB_SETTINGS_ARM_NONE);
@@ -253,73 +258,228 @@ static void safety_request_fire_now(const char *event)
     app_log_write(event);
 }
 
-static bool safety_tilt_exceeded(const accel_data_t *sample)
+/* Evaluate the rule in disjunctive normal form: AND binds tighter than OR.
+ * A condition is satisfied once its predicate has held continuously for
+ * hold_ms; an AND group fires when all its conditions are satisfied at the
+ * same instant. */
+static void safety_service_triggers(uint32_t ms, bool distance_valid, float distance_m,
+                                    const accel_data_t *sample)
 {
-    int64_t baseline_norm_sq;
-    int64_t current_norm_sq;
-    int64_t dot_i;
-    float dot;
-    float limit;
+    bool satisfied[UWB_ARM_RULE_MAX_CONDS];
+    int32_t dist_mm = 0;
+    int32_t tilt_md = 0;
+    bool tilt_valid;
+    bool group_ok;
 
-    if (!safety_tilt_baseline_valid || !safety_accel_is_usable(sample))
+    if (safety_rule.count == 0u)
     {
-        return false;
+        return;
     }
 
-    baseline_norm_sq = safety_accel_norm_sq(safety_tilt_baseline_x, safety_tilt_baseline_y, safety_tilt_baseline_z);
-    current_norm_sq = safety_accel_norm_sq(sample->x, sample->y, sample->z);
-    dot_i = ((int64_t)safety_tilt_baseline_x * (int64_t)sample->x) +
-            ((int64_t)safety_tilt_baseline_y * (int64_t)sample->y) +
-            ((int64_t)safety_tilt_baseline_z * (int64_t)sample->z);
-
-    if ((baseline_norm_sq < SAFETY_MIN_ACCEL_NORM_SQ) || (current_norm_sq < SAFETY_MIN_ACCEL_NORM_SQ))
+    if (distance_valid)
     {
-        return false;
+        dist_mm = (int32_t)(distance_m * 1000.0f);
     }
-    if (dot_i <= 0)
+    tilt_valid = safety_tilt_millideg(sample, &tilt_md);
+
+    for (uint32_t i = 0u; i < safety_rule.count; i++)
     {
-        return true;
+        const uwb_arm_cond_t *c = &safety_rule.conds[i];
+        bool measure_valid = (c->source == UWB_ARM_SRC_DIST) ? distance_valid : tilt_valid;
+        int32_t measure = (c->source == UWB_ARM_SRC_DIST) ? dist_mm : tilt_md;
+        bool instant = measure_valid &&
+                       ((c->op == UWB_ARM_OP_GT) ? (measure > c->threshold_milli)
+                                                 : (measure < c->threshold_milli));
+        if (instant)
+        {
+            if (!safety_cond_tracking[i])
+            {
+                safety_cond_tracking[i] = true;
+                safety_cond_since_ms[i] = ms;
+            }
+            satisfied[i] = ((uint32_t)(ms - safety_cond_since_ms[i]) >= c->hold_ms);
+        }
+        else
+        {
+            safety_cond_tracking[i] = false;
+            satisfied[i] = false;
+        }
     }
 
-    dot = (float)dot_i;
-    limit = (float)(SAFETY_TILT_COS_50_DEG * SAFETY_TILT_COS_50_DEG) *
-            (float)baseline_norm_sq * (float)current_norm_sq;
-    return (dot * dot) <= limit;
+    group_ok = true;
+    for (uint32_t i = 0u; i < safety_rule.count; i++)
+    {
+        uint8_t link = safety_rule.conds[i].link;
+        group_ok = group_ok && satisfied[i];
+        if (link != UWB_ARM_LINK_AND)
+        {
+            /* OR or END closes the current AND group. */
+            if (group_ok)
+            {
+                safety_request_fire_now("EVENT,ARM_TRIGGER,RULE");
+                return;
+            }
+            group_ok = true;
+        }
+    }
 }
 
-static void safety_service_triggers(bool distance_valid, float distance_m, const accel_data_t *sample)
+/* Serialize the active rule: DIST,GT,2.00,500,AND,TILT,GT,50.0,200,... */
+static void safety_rule_format(char *buf, size_t len, const uwb_arm_rule_t *rule)
 {
-    if (safety_arm_mode == SAFETY_ARM_NONE)
+    size_t pos = 0u;
+    buf[0] = '\0';
+    for (uint32_t i = 0u; (i < rule->count) && (pos < len); i++)
     {
-        return;
-    }
-
-    if ((safety_arm_mode == SAFETY_ARM_DISTANCE_2M) && distance_valid && (distance_m >= SAFETY_DISTANCE_TRIGGER_M))
-    {
-        safety_request_fire_now("EVENT,ARM_TRIGGER,DISTANCE_2M");
-        return;
-    }
-
-    if (safety_arm_mode == SAFETY_ARM_TILT_50)
-    {
-        if (!safety_tilt_baseline_valid)
+        const uwb_arm_cond_t *c = &rule->conds[i];
+        int written;
+        if (c->source == UWB_ARM_SRC_DIST)
         {
-            if (safety_accel_is_usable(sample))
-            {
-                safety_tilt_baseline_x = sample->x;
-                safety_tilt_baseline_y = sample->y;
-                safety_tilt_baseline_z = sample->z;
-                safety_tilt_baseline_valid = true;
-                app_log_write("EVENT,ARM_TILT_BASELINE_CAPTURED");
-            }
-            return;
+            written = snprintf(buf + pos, len - pos, "%sDIST,%s,%ld.%02ld,%lu",
+                               (i > 0u) ? ((rule->conds[i - 1u].link == UWB_ARM_LINK_AND) ? ",AND," : ",OR,") : "",
+                               (c->op == UWB_ARM_OP_GT) ? "GT" : "LT",
+                               (long)(c->threshold_milli / 1000),
+                               (long)((c->threshold_milli % 1000) / 10),
+                               (unsigned long)c->hold_ms);
+        }
+        else
+        {
+            written = snprintf(buf + pos, len - pos, "%sTILT,%s,%ld.%01ld,%lu",
+                               (i > 0u) ? ((rule->conds[i - 1u].link == UWB_ARM_LINK_AND) ? ",AND," : ",OR,") : "",
+                               (c->op == UWB_ARM_OP_GT) ? "GT" : "LT",
+                               (long)(c->threshold_milli / 1000),
+                               (long)((c->threshold_milli % 1000) / 100),
+                               (unsigned long)c->hold_ms);
+        }
+        if (written < 0)
+        {
+            break;
+        }
+        pos += (size_t)written;
+    }
+}
+
+/* Cut the next comma-separated token in place; returns NULL at end. */
+static char *safety_next_token(char **cursor)
+{
+    char *tok = *cursor;
+    char *sep;
+
+    if ((tok == NULL) || (*tok == '\0'))
+    {
+        return NULL;
+    }
+    sep = strchr(tok, ',');
+    if (sep != NULL)
+    {
+        *sep = '\0';
+        *cursor = sep + 1;
+    }
+    else
+    {
+        *cursor = tok + strlen(tok);
+    }
+    return tok;
+}
+
+/* Parse "DIST,GT,2.00,500[,AND,TILT,GT,50,200]..." into a rule. */
+static bool safety_rule_parse(const char *text, uwb_arm_rule_t *rule)
+{
+    char tmp[224];
+    char *cursor = tmp;
+    char *tok;
+
+    memset(rule, 0, sizeof(*rule));
+    strncpy(tmp, text, sizeof(tmp) - 1u);
+    tmp[sizeof(tmp) - 1u] = '\0';
+
+    tok = safety_next_token(&cursor);
+    while (tok != NULL)
+    {
+        uwb_arm_cond_t *c;
+        char *op_tok = safety_next_token(&cursor);
+        char *val_tok = safety_next_token(&cursor);
+        char *ms_tok = safety_next_token(&cursor);
+        char *end = NULL;
+        float value;
+
+        if (rule->count >= UWB_ARM_RULE_MAX_CONDS)
+        {
+            return false;
+        }
+        if ((op_tok == NULL) || (val_tok == NULL) || (ms_tok == NULL))
+        {
+            return false;
+        }
+        c = &rule->conds[rule->count];
+
+        if ((strcmp(tok, "DIST") == 0) || (strcmp(tok, "DISTANCE") == 0))
+        {
+            c->source = UWB_ARM_SRC_DIST;
+        }
+        else if ((strcmp(tok, "TILT") == 0) || (strcmp(tok, "INCLINATION") == 0))
+        {
+            c->source = UWB_ARM_SRC_TILT;
+        }
+        else
+        {
+            return false;
         }
 
-        if (safety_tilt_exceeded(sample))
+        if (strcmp(op_tok, "GT") == 0)
         {
-            safety_request_fire_now("EVENT,ARM_TRIGGER,TILT_50");
+            c->op = UWB_ARM_OP_GT;
+        }
+        else if (strcmp(op_tok, "LT") == 0)
+        {
+            c->op = UWB_ARM_OP_LT;
+        }
+        else
+        {
+            return false;
+        }
+
+        value = strtof(val_tok, &end);
+        if ((end == val_tok) || (value < 0.0f) || (value > 1000000.0f))
+        {
+            return false;
+        }
+        c->threshold_milli = (int32_t)(value * 1000.0f + 0.5f);
+
+        c->hold_ms = (uint32_t)strtoul(ms_tok, &end, 10);
+        if ((end == ms_tok) || (c->hold_ms > 3600000u))
+        {
+            return false;
+        }
+
+        c->link = UWB_ARM_LINK_END;
+        rule->count++;
+
+        tok = safety_next_token(&cursor);
+        if (tok == NULL)
+        {
+            break;
+        }
+        if ((strcmp(tok, "AND") == 0) || (strcmp(tok, "ET") == 0))
+        {
+            c->link = UWB_ARM_LINK_AND;
+        }
+        else if ((strcmp(tok, "OR") == 0) || (strcmp(tok, "OU") == 0))
+        {
+            c->link = UWB_ARM_LINK_OR;
+        }
+        else
+        {
+            return false;
+        }
+        tok = safety_next_token(&cursor);
+        if (tok == NULL)
+        {
+            return false;
         }
     }
+
+    return rule->count > 0u;
 }
 
 #ifdef UWB_BLE_GATT_ENABLED
@@ -394,20 +554,16 @@ static bool ble_gatt_service_admin_shutdown(uint32_t now_ms)
     return true;
 }
 
-static const char *ble_gatt_arm_ack_for_mode(uint32_t arm_mode)
+static const char *ble_gatt_arm_ack_for_settings(const uwb_persistent_settings_t *settings)
 {
-    if (arm_mode == UWB_SETTINGS_ARM_DISTANCE_2M)
+    if (settings->rule.count > 0u)
     {
-        return "ACK,ARM,DISTANCE_2M,SAVED";
-    }
-    if (arm_mode == UWB_SETTINGS_ARM_TILT_50)
-    {
-        return "ACK,ARM,TILT_50,SAVED";
+        return "ACK,ARM,RULE,SAVED";
     }
     return "ACK,ARM,DISARMED,SAVED";
 }
 
-static bool ble_gatt_start_settings_write(uint32_t arm_mode)
+static bool ble_gatt_start_rule_write(const uwb_arm_rule_t *rule)
 {
     if (uwb_event_log_busy())
     {
@@ -415,7 +571,7 @@ static bool ble_gatt_start_settings_write(uint32_t arm_mode)
         return true;
     }
 
-    if (!uwb_persistent_settings_write_arm(arm_mode))
+    if (!uwb_persistent_settings_write_rule(rule))
     {
         app_log_write("ERR,ARM_SETTINGS_BUSY");
         return true;
@@ -458,7 +614,7 @@ static void ble_gatt_service_settings_write(void)
     if (uwb_persistent_settings_consume_write_success())
     {
         uwb_persistent_settings_t settings = uwb_persistent_settings_get();
-        safety_apply_persistent_arm_mode(settings.arm_mode);
+        safety_apply_rule(&settings.rule);
         if (ble_gatt_pending_write_is_name)
         {
             ble_gatt_pending_write_is_name = false;
@@ -467,7 +623,7 @@ static void ble_gatt_service_settings_write(void)
         }
         else
         {
-            app_log_write(ble_gatt_arm_ack_for_mode(settings.arm_mode));
+            app_log_write(ble_gatt_arm_ack_for_settings(&settings));
         }
         if (ble_gatt_shutdown_after_settings_write)
         {
@@ -988,6 +1144,22 @@ static bool handle_app_command(const char *cmd)
         return false;
     }
 
+    if (strcmp(cmd, "CFG,GET_FW") == 0)
+    {
+        /* Version applicative maintenue par le bootloader Secure DFU
+         * (page settings 0x7F000: crc, settings_version, app_version). */
+        const uint32_t *bl_settings = (const uint32_t *)0x7F000;
+        uint32_t app_version = bl_settings[2];
+        if (bl_settings[0] == 0xFFFFFFFFu)
+        {
+            app_version = 0; /* page effacée: pas de bootloader/settings */
+        }
+        snprintf(output_buf, sizeof(output_buf), "FW,%lu,%s %s",
+                 (unsigned long)app_version, __DATE__, __TIME__);
+        app_log_write(output_buf);
+        return false;
+    }
+
     if (strcmp(cmd, "CFG,GET_PROFILE") == 0)
     {
         snprintf(output_buf, sizeof(output_buf), "PROFILE,%u", (unsigned int)current_profile_opt);
@@ -1028,7 +1200,6 @@ static bool handle_app_command(const char *cmd)
 
     if ((strcmp(cmd, "ARM,GET") == 0) || (strcmp(cmd, "CFG,GET_ARM") == 0))
     {
-        const char *mode = "DISARMED";
 #ifdef UWB_BLE_GATT_ENABLED
         if (uwb_persistent_settings_write_pending())
         {
@@ -1036,16 +1207,26 @@ static bool handle_app_command(const char *cmd)
             return false;
         }
 #endif
-        if (safety_arm_mode == SAFETY_ARM_DISTANCE_2M)
         {
-            mode = "DISTANCE_2M";
+            /* Report the persisted rule (source of truth), not only the RAM
+             * copy: in normal boot the saved rule is not applied to RAM. */
+            const uwb_arm_rule_t *rule = &safety_rule;
+#ifdef UWB_BLE_GATT_ENABLED
+            uwb_persistent_settings_t settings = uwb_persistent_settings_get();
+            rule = &settings.rule;
+#endif
+            if (rule->count == 0u)
+            {
+                app_log_write("ARM,DISARMED");
+            }
+            else
+            {
+                char rule_text[224];
+                safety_rule_format(rule_text, sizeof(rule_text), rule);
+                snprintf(output_buf, sizeof(output_buf), "ARM,RULE,%s", rule_text);
+                app_log_write(output_buf);
+            }
         }
-        else if (safety_arm_mode == SAFETY_ARM_TILT_50)
-        {
-            mode = safety_tilt_baseline_valid ? "TILT_50" : "TILT_50_WAIT_BASELINE";
-        }
-        snprintf(output_buf, sizeof(output_buf), "ARM,%s", mode);
-        app_log_write(output_buf);
         return false;
     }
 
@@ -1148,18 +1329,40 @@ static bool handle_app_command(const char *cmd)
     {
         fire_request_frames_remaining = 200u;
         fire_request_code = POLL_MSG_FIRE_IMMEDIATE;
+#ifdef UWB_BLE_GATT_ENABLED
+        /* Test fire also freezes a black-box capture (same as a rule trigger). */
+        uwb_event_log_trigger((uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u));
+#endif
         app_log_write("ACK,PYRO_FORWARD_NOW_ARMED");
         return true;
+    }
+
+    if (strncmp(cmd, "ARM,RULE,", 9) == 0)
+    {
+        uwb_arm_rule_t rule;
+        if (!safety_rule_parse(cmd + 9, &rule))
+        {
+            app_log_write("ERR,ARM_RULE_INVALID");
+            return true;
+        }
+#ifdef UWB_BLE_GATT_ENABLED
+        return ble_gatt_start_rule_write(&rule);
+#else
+        safety_apply_rule(&rule);
+        app_log_write("ACK,ARM,RULE");
+        return true;
+#endif
     }
 
     if ((strcmp(cmd, "ARM,DIST,2.00") == 0) || (strcmp(cmd, "ARM,DIST,2") == 0) ||
         (strcmp(cmd, "ARM,DISTANCE,2.00") == 0) || (strcmp(cmd, "ARM,DISTANCE,2") == 0))
     {
+        uwb_arm_rule_t rule;
+        (void)safety_rule_parse("DIST,GT,2.00,0", &rule);
 #ifdef UWB_BLE_GATT_ENABLED
-        return ble_gatt_start_settings_write(UWB_SETTINGS_ARM_DISTANCE_2M);
+        return ble_gatt_start_rule_write(&rule);
 #else
-        safety_arm_mode = SAFETY_ARM_DISTANCE_2M;
-        safety_tilt_baseline_valid = false;
+        safety_apply_rule(&rule);
         app_log_write("ACK,ARM,DISTANCE_2M");
         return true;
 #endif
@@ -1167,11 +1370,12 @@ static bool handle_app_command(const char *cmd)
 
     if ((strcmp(cmd, "ARM,TILT,50") == 0) || (strcmp(cmd, "ARM,INCLINATION,50") == 0))
     {
+        uwb_arm_rule_t rule;
+        (void)safety_rule_parse("TILT,GT,50,0", &rule);
 #ifdef UWB_BLE_GATT_ENABLED
-        return ble_gatt_start_settings_write(UWB_SETTINGS_ARM_TILT_50);
+        return ble_gatt_start_rule_write(&rule);
 #else
-        safety_arm_mode = SAFETY_ARM_TILT_50;
-        safety_tilt_baseline_valid = false;
+        safety_apply_rule(&rule);
         app_log_write("ACK,ARM,TILT_50");
         return true;
 #endif
@@ -1180,7 +1384,9 @@ static bool handle_app_command(const char *cmd)
     if ((strcmp(cmd, "ARM,DISARM") == 0) || (strcmp(cmd, "DISARM") == 0))
     {
 #ifdef UWB_BLE_GATT_ENABLED
-        return ble_gatt_start_settings_write(UWB_SETTINGS_ARM_NONE);
+        uwb_arm_rule_t rule;
+        memset(&rule, 0, sizeof(rule));
+        return ble_gatt_start_rule_write(&rule);
 #else
         safety_disarm();
         app_log_write("ACK,ARM,DISARMED");
@@ -1229,12 +1435,16 @@ static bool handle_app_command(const char *cmd)
             uint32_t ms;
             int16_t raw_mm;
             int16_t filt_mm;
-            if (!uwb_event_log_read_record(slot, i, &ms, &raw_mm, &filt_mm))
+            int16_t ia[3];
+            int16_t ra[3];
+            if (!uwb_event_log_read_record(slot, i, &ms, &raw_mm, &filt_mm, ia, ra))
             {
                 break;
             }
-            snprintf(output_buf, sizeof(output_buf), "L,%lu,%d,%d",
-                     (unsigned long)ms, (int)raw_mm, (int)filt_mm);
+            snprintf(output_buf, sizeof(output_buf), "L,%lu,%d,%d,%d,%d,%d,%d,%d,%d",
+                     (unsigned long)ms, (int)raw_mm, (int)filt_mm,
+                     (int)ia[0], (int)ia[1], (int)ia[2],
+                     (int)ra[0], (int)ra[1], (int)ra[2]);
             log_stream_line(output_buf);
         }
 
@@ -1360,11 +1570,17 @@ int ss_twr_initiator_custom(void)
             NRF_POWER->GPREGRET = 0u;
         }
 
-        if ((settings.arm_mode != UWB_SETTINGS_ARM_NONE) && run_armed_boot)
+        if ((settings.rule.count > 0u) && run_armed_boot)
         {
-            safety_apply_persistent_arm_mode(settings.arm_mode);
-            ble_gatt_admin_enabled = false;
-            app_log_write("BLE_GATT,SKIP_ARMED");
+            /* Armed boot: apply the persisted rule but keep BLE advertising
+             * (Vario model) so the box can be reconnected to disarm or edit
+             * the rule. While a client is connected, ranging (and therefore
+             * rule evaluation) pauses; it resumes armed on disconnect. */
+            safety_apply_rule(&settings.rule);
+            ble_nus_bridge_set_device_name(settings.name);
+            ble_nus_bridge_init();
+            ble_gatt_admin_enabled = true;
+            app_log_write("BLE_GATT,READY_ARMED");
         }
         else
         {
@@ -1498,17 +1714,27 @@ int ss_twr_initiator_custom(void)
             if (fire_request_frames_remaining == 0u)
             {
                 fire_request_code = POLL_MSG_FIRE_NONE;
-#ifdef UWB_BLE_GATT_ENABLED
-                if (ble_gatt_reset_after_fire_window)
-                {
-                    app_log_write("EVENT,ARM_TRIGGER_RESET_TO_BLE");
-                    NVIC_SystemReset();
-                }
-#endif
             }
         }
+#ifdef UWB_BLE_GATT_ENABLED
+        else if (ble_gatt_reset_after_fire_window)
+        {
+            /* Wait for the black-box dump and the disarm settings write
+             * to reach flash before resetting. */
+            if (!uwb_event_log_busy() && !uwb_persistent_settings_write_pending())
+            {
+                app_log_write("EVENT,ARM_TRIGGER_RESET_TO_BLE");
+                NVIC_SystemReset();
+            }
+        }
+#endif
 
         /* === TX POLL === */
+        bool cycle_dist_valid = false;
+        float cycle_dist_m = 0.0f;
+        float cycle_dist_raw_m = 0.0f;
+        int16_t cycle_resp_accel[3] = { 0, 0, 0 };
+
         tx_poll_msg[ALL_MSG_SN_IDX] = frame_seq_nb;
         dwt_writetxdata(sizeof(tx_poll_msg), tx_poll_msg, 0);
         dwt_writetxfctrl(sizeof(tx_poll_msg) + FCS_LEN, 0, 1); /* ranging bit = 1 */
@@ -1689,10 +1915,12 @@ int ss_twr_initiator_custom(void)
                                                valid, dist_filt, dist_smooth,
                                                responder_load_mv, responder_load_connected);
 
-                            safety_service_triggers(valid, dist_filt, &accel_data);
-#ifdef UWB_BLE_GATT_ENABLED
-                            uwb_event_log_push(ms, valid, distance, dist_filt);
-#endif
+                            cycle_dist_valid = valid;
+                            cycle_dist_m = dist_filt;
+                            cycle_dist_raw_m = distance;
+                            cycle_resp_accel[0] = responder_accel[0];
+                            cycle_resp_accel[1] = responder_accel[1];
+                            cycle_resp_accel[2] = responder_accel[2];
 
 #ifdef UWB_BLE_ADV_ENABLED
                             if ((uint32_t)(ms - ble_adv_last_ms) >= BLE_ADV_PERIOD_MS)
@@ -1777,6 +2005,23 @@ int ss_twr_initiator_custom(void)
         else
         {
             dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
+        }
+
+        /* Evaluate the trigger rule every cycle, even when ranging failed
+         * (responder off / out of range): tilt-only conditions must still work. */
+        {
+            uint32_t now_ms = (uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u);
+#ifdef UWB_BLE_GATT_ENABLED
+            /* Black box records every cycle: distance (sentinel on ranging
+             * failure) + initiator accel + responder accel (zeros when no
+             * response this cycle). */
+            {
+                int16_t ia[3] = { accel_data.x, accel_data.y, accel_data.z };
+                uwb_event_log_push(now_ms, cycle_dist_valid, cycle_dist_raw_m,
+                                   filtered_distance_m, ia, cycle_resp_accel);
+            }
+#endif
+            safety_service_triggers(now_ms, cycle_dist_valid, cycle_dist_m, &accel_data);
         }
 
 #ifndef UWB_BLE_GATT_ENABLED

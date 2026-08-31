@@ -13,9 +13,9 @@
 #endif
 
 #define UWB_SETTINGS_MAGIC     0x55574253u
-#define UWB_SETTINGS_VERSION   2u
+#define UWB_SETTINGS_VERSION   3u
 #define UWB_SETTINGS_PAGE_SIZE 0x1000u
-#define UWB_SETTINGS_WORDS     10u
+#define UWB_SETTINGS_WORDS     (sizeof(uwb_settings_record_t) / 4u)
 #define UWB_SETTINGS_SOC_PRIO  1u
 
 typedef struct
@@ -25,9 +25,22 @@ typedef struct
     uint32_t arm_mode;
     uint32_t seq;
     char     name[UWB_SETTINGS_NAME_MAX + 1u]; /* 16 bytes = 4 words */
+    uwb_arm_rule_t rule;                       /* 25 words */
     uint32_t crc;
     uint32_t reserved;
 } uwb_settings_record_t;
+
+/* Legacy v2 record layout (no rule) for migration. */
+typedef struct
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t arm_mode;
+    uint32_t seq;
+    char     name[UWB_SETTINGS_NAME_MAX + 1u];
+    uint32_t crc;
+    uint32_t reserved;
+} uwb_settings_record_v2_t;
 
 /* Legacy v1 record layout (no name field) for migration. */
 typedef struct
@@ -57,6 +70,22 @@ static uint32_t settings_crc(const uwb_settings_record_t *record)
 {
     uint32_t crc = record->magic ^ record->version ^ record->arm_mode ^ record->seq ^ 0xA5A55A5Au;
     const uint32_t *name_words = (const uint32_t *)record->name;
+    const uint32_t *rule_words = (const uint32_t *)&record->rule;
+    for (uint32_t i = 0u; i < (sizeof(record->name) / 4u); i++)
+    {
+        crc ^= name_words[i];
+    }
+    for (uint32_t i = 0u; i < (sizeof(record->rule) / 4u); i++)
+    {
+        crc ^= rule_words[i];
+    }
+    return crc;
+}
+
+static uint32_t settings_crc_v2(const uwb_settings_record_v2_t *record)
+{
+    uint32_t crc = record->magic ^ record->version ^ record->arm_mode ^ record->seq ^ 0xA5A55A5Au;
+    const uint32_t *name_words = (const uint32_t *)record->name;
     for (uint32_t i = 0u; i < (sizeof(record->name) / 4u); i++)
     {
         crc ^= name_words[i];
@@ -73,7 +102,63 @@ static bool arm_mode_is_valid(uint32_t arm_mode)
 {
     return (arm_mode == UWB_SETTINGS_ARM_NONE) ||
            (arm_mode == UWB_SETTINGS_ARM_DISTANCE_2M) ||
-           (arm_mode == UWB_SETTINGS_ARM_TILT_50);
+           (arm_mode == UWB_SETTINGS_ARM_TILT_50) ||
+           (arm_mode == UWB_SETTINGS_ARM_RULE);
+}
+
+static bool rule_is_valid(const uwb_arm_rule_t *rule)
+{
+    if (rule->count > UWB_ARM_RULE_MAX_CONDS)
+    {
+        return false;
+    }
+    for (uint32_t i = 0u; i < rule->count; i++)
+    {
+        const uwb_arm_cond_t *c = &rule->conds[i];
+        bool last = (i == (rule->count - 1u));
+        if ((c->source != UWB_ARM_SRC_DIST) && (c->source != UWB_ARM_SRC_TILT))
+        {
+            return false;
+        }
+        if ((c->op != UWB_ARM_OP_GT) && (c->op != UWB_ARM_OP_LT))
+        {
+            return false;
+        }
+        if (last ? (c->link != UWB_ARM_LINK_END)
+                 : ((c->link != UWB_ARM_LINK_AND) && (c->link != UWB_ARM_LINK_OR)))
+        {
+            return false;
+        }
+        if ((c->threshold_milli < 0) || (c->threshold_milli > 1000000000))
+        {
+            return false;
+        }
+        if (c->hold_ms > 3600000u)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* Map a legacy arm_mode to the equivalent rule. */
+static void rule_from_legacy_arm(uint32_t arm_mode, uwb_arm_rule_t *rule)
+{
+    memset(rule, 0, sizeof(*rule));
+    if (arm_mode == UWB_SETTINGS_ARM_DISTANCE_2M)
+    {
+        rule->count = 1u;
+        rule->conds[0].source = UWB_ARM_SRC_DIST;
+        rule->conds[0].op = UWB_ARM_OP_GT;
+        rule->conds[0].threshold_milli = 2000;
+    }
+    else if (arm_mode == UWB_SETTINGS_ARM_TILT_50)
+    {
+        rule->count = 1u;
+        rule->conds[0].source = UWB_ARM_SRC_TILT;
+        rule->conds[0].op = UWB_ARM_OP_GT;
+        rule->conds[0].threshold_milli = 50000;
+    }
 }
 
 bool uwb_persistent_settings_name_is_valid(const char *name)
@@ -113,7 +198,18 @@ static bool record_is_valid(const uwb_settings_record_t *record)
            arm_mode_is_valid(record->arm_mode) &&
            (record->name[UWB_SETTINGS_NAME_MAX] == '\0') &&
            uwb_persistent_settings_name_is_valid(record->name) &&
+           rule_is_valid(&record->rule) &&
            (record->crc == settings_crc(record));
+}
+
+static bool record_v2_is_valid(const uwb_settings_record_v2_t *record)
+{
+    return (record->magic == UWB_SETTINGS_MAGIC) &&
+           (record->version == 2u) &&
+           arm_mode_is_valid(record->arm_mode) &&
+           (record->name[UWB_SETTINGS_NAME_MAX] == '\0') &&
+           uwb_persistent_settings_name_is_valid(record->name) &&
+           (record->crc == settings_crc_v2(record));
 }
 
 static bool record_v1_is_valid(const uwb_settings_record_v1_t *record)
@@ -165,6 +261,7 @@ static void settings_load_defaults(void)
     m_settings.seq = 0u;
     strncpy(m_settings.name, UWB_SETTINGS_NAME_DEFAULT, sizeof(m_settings.name) - 1u);
     m_settings.name[sizeof(m_settings.name) - 1u] = '\0';
+    memset(&m_settings.rule, 0, sizeof(m_settings.rule));
 }
 
 static void settings_apply_record(const uwb_settings_record_t *record)
@@ -173,6 +270,7 @@ static void settings_apply_record(const uwb_settings_record_t *record)
     m_settings.seq = record->seq;
     memcpy(m_settings.name, record->name, sizeof(m_settings.name));
     m_settings.name[sizeof(m_settings.name) - 1u] = '\0';
+    m_settings.rule = record->rule;
 }
 
 static void settings_mark_error(void)
@@ -234,13 +332,27 @@ void uwb_persistent_settings_init(void)
     }
     else
     {
-        /* Migrate a valid legacy v1 record: keep arm/seq, default name. */
+        /* Migrate valid legacy records: keep arm/seq (+name for v2),
+         * translate the legacy arm mode to an equivalent rule. */
+        const uwb_settings_record_v2_t *record_v2 =
+            (const uwb_settings_record_v2_t *)(uintptr_t)UWB_SETTINGS_FLASH_ADDR;
         const uwb_settings_record_v1_t *record_v1 =
             (const uwb_settings_record_v1_t *)(uintptr_t)UWB_SETTINGS_FLASH_ADDR;
-        if (record_v1_is_valid(record_v1))
+        if (record_v2_is_valid(record_v2))
         {
-            m_settings.arm_mode = record_v1->arm_mode;
+            m_settings.seq = record_v2->seq;
+            memcpy(m_settings.name, record_v2->name, sizeof(m_settings.name));
+            m_settings.name[sizeof(m_settings.name) - 1u] = '\0';
+            rule_from_legacy_arm(record_v2->arm_mode, &m_settings.rule);
+            m_settings.arm_mode = (m_settings.rule.count > 0u) ? UWB_SETTINGS_ARM_RULE
+                                                               : UWB_SETTINGS_ARM_NONE;
+        }
+        else if (record_v1_is_valid(record_v1))
+        {
             m_settings.seq = record_v1->seq;
+            rule_from_legacy_arm(record_v1->arm_mode, &m_settings.rule);
+            m_settings.arm_mode = (m_settings.rule.count > 0u) ? UWB_SETTINGS_ARM_RULE
+                                                               : UWB_SETTINGS_ARM_NONE;
         }
     }
 }
@@ -250,13 +362,13 @@ uwb_persistent_settings_t uwb_persistent_settings_get(void)
     return m_settings;
 }
 
-static bool settings_start_write(uint32_t arm_mode, const char *name)
+static bool settings_start_write(const char *name, const uwb_arm_rule_t *rule)
 {
     uint32_t page_number;
     uint32_t err_code;
 
-    if (!arm_mode_is_valid(arm_mode) ||
-        !uwb_persistent_settings_name_is_valid(name) ||
+    if (!uwb_persistent_settings_name_is_valid(name) ||
+        !rule_is_valid(rule) ||
         (m_write_state != SETTINGS_WRITE_IDLE))
     {
         return false;
@@ -265,10 +377,17 @@ static bool settings_start_write(uint32_t arm_mode, const char *name)
     memset(&m_pending_record, 0xFF, sizeof(m_pending_record));
     m_pending_record.magic = UWB_SETTINGS_MAGIC;
     m_pending_record.version = UWB_SETTINGS_VERSION;
-    m_pending_record.arm_mode = arm_mode;
+    m_pending_record.arm_mode = (rule->count > 0u) ? UWB_SETTINGS_ARM_RULE : UWB_SETTINGS_ARM_NONE;
     m_pending_record.seq = m_settings.seq + 1u;
     memset(m_pending_record.name, 0, sizeof(m_pending_record.name));
     strncpy(m_pending_record.name, name, sizeof(m_pending_record.name) - 1u);
+    memset(&m_pending_record.rule, 0, sizeof(m_pending_record.rule));
+    m_pending_record.rule.count = rule->count;
+    for (uint32_t i = 0u; i < rule->count; i++)
+    {
+        m_pending_record.rule.conds[i] = rule->conds[i];
+        m_pending_record.rule.conds[i].reserved = 0u;
+    }
     m_pending_record.crc = settings_crc(&m_pending_record);
     m_write_success = false;
     m_write_error = false;
@@ -296,12 +415,19 @@ static bool settings_start_write(uint32_t arm_mode, const char *name)
 
 bool uwb_persistent_settings_write_arm(uint32_t arm_mode)
 {
-    return settings_start_write(arm_mode, m_settings.name);
+    uwb_arm_rule_t rule;
+    rule_from_legacy_arm(arm_mode, &rule);
+    return settings_start_write(m_settings.name, &rule);
+}
+
+bool uwb_persistent_settings_write_rule(const uwb_arm_rule_t *rule)
+{
+    return settings_start_write(m_settings.name, rule);
 }
 
 bool uwb_persistent_settings_write_name(const char *name)
 {
-    return settings_start_write(m_settings.arm_mode, name);
+    return settings_start_write(name, &m_settings.rule);
 }
 
 bool uwb_persistent_settings_write_pending(void)

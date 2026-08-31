@@ -15,20 +15,17 @@
 #endif
 
 #define EVLOG_MAGIC              0x4C425755u /* "UWBL" */
-#define EVLOG_VERSION            1u
+#define EVLOG_VERSION            2u
 #define EVLOG_PAGE_SIZE          0x1000u
-#define EVLOG_SLOT_SIZE          0x5000u /* 5 pages = 20 KB */
+#define EVLOG_SLOT_SIZE          0xA000u /* 10 pages = 40 KB */
 #define EVLOG_HEADER_WORDS       8u
-#define EVLOG_MAX_RECORDS        ((EVLOG_SLOT_SIZE - (EVLOG_HEADER_WORDS * 4u)) / 8u) /* 2556 */
+#define EVLOG_MAX_RECORDS        ((EVLOG_SLOT_SIZE - (EVLOG_HEADER_WORDS * 4u)) / 20u) /* 2046 */
 #define EVLOG_RING_CAPACITY      EVLOG_MAX_RECORDS
 
-/* Trigger: filtered distance above threshold for N consecutive valid
- * samples. Re-arms when the distance comes back below the re-arm level. */
-#define EVLOG_TRIGGER_MM         1000
-#define EVLOG_REARM_MM           800
-#define EVLOG_TRIGGER_CONSEC     3u
-#define EVLOG_POST_RECORDS       400u    /* ~1 s at 400 Hz */
-#define EVLOG_POST_TIMEOUT_MS    1500u   /* freeze even if ranging stops */
+/* Capture is fired externally (arm-rule trigger); keep a short
+ * post-trigger tail then dump. */
+#define EVLOG_POST_RECORDS       200u    /* ~0.5 s at 400 Hz */
+#define EVLOG_POST_TIMEOUT_MS    800u    /* freeze even if ranging stops */
 
 #define EVLOG_CHUNK_WORDS        256u    /* 1 KB per sd_flash_write */
 #define EVLOG_SOC_PRIO           1u
@@ -38,7 +35,9 @@ typedef struct
     uint32_t ms;
     int16_t  raw_mm;
     int16_t  filt_mm;
-} evlog_record_t; /* 8 bytes, 2 words */
+    int16_t  ia[3]; /* initiator accel XYZ (raw) */
+    int16_t  ra[3]; /* responder accel XYZ (raw, zeros when no response) */
+} evlog_record_t; /* 20 bytes, 5 words */
 
 typedef struct
 {
@@ -54,9 +53,8 @@ typedef struct
 
 typedef enum
 {
-    TRIG_WAIT_BELOW = 0, /* wait for distance < re-arm level before arming */
-    TRIG_ARMED,
-    TRIG_POST            /* triggered, capturing post-trigger samples */
+    TRIG_IDLE = 0, /* recording ring, waiting for external trigger */
+    TRIG_POST      /* triggered, capturing post-trigger samples */
 } trig_state_t;
 
 typedef enum
@@ -71,8 +69,7 @@ static evlog_record_t m_ring[EVLOG_RING_CAPACITY];
 static uint32_t m_ring_head;
 static uint32_t m_ring_count;
 
-static trig_state_t m_trig_state = TRIG_WAIT_BELOW;
-static uint32_t m_consec_above;
+static trig_state_t m_trig_state = TRIG_IDLE;
 static uint32_t m_trigger_ms;
 static uint32_t m_post_count;
 static uint32_t m_pre_count;
@@ -137,7 +134,7 @@ static int16_t distance_to_mm(float distance_m)
 }
 
 /* Fill nwords of the dump image starting at word offset. The image is:
- * header (8 words) followed by records (2 words each) in chronological
+ * header (8 words) followed by records (5 words each) in chronological
  * order, padded with 0xFFFFFFFF. */
 static void dump_fill_words(uint32_t word_offset, uint32_t *dst, uint32_t nwords)
 {
@@ -152,18 +149,18 @@ static void dump_fill_words(uint32_t word_offset, uint32_t *dst, uint32_t nwords
         }
         else
         {
-            uint32_t rec = (w - EVLOG_HEADER_WORDS) / 2u;
+            uint32_t rec = (w - EVLOG_HEADER_WORDS) / 5u;
             if (rec >= m_dump_count)
             {
                 dst[i] = 0xFFFFFFFFu;
             }
             else
             {
-                uint32_t tmp[2];
+                uint32_t tmp[5];
                 const evlog_record_t *r =
                     &m_ring[(m_dump_start + rec) % EVLOG_RING_CAPACITY];
                 memcpy(tmp, r, sizeof(tmp));
-                dst[i] = tmp[(w - EVLOG_HEADER_WORDS) & 1u];
+                dst[i] = tmp[(w - EVLOG_HEADER_WORDS) % 5u];
             }
         }
     }
@@ -201,15 +198,14 @@ static void dump_prepare(void)
     m_dump_header.pre_count = m_pre_count;
     m_dump_header.crc = header_crc(&m_dump_header);
 
-    m_total_words = EVLOG_HEADER_WORDS + (m_dump_count * 2u);
+    m_total_words = EVLOG_HEADER_WORDS + (m_dump_count * 5u);
 }
 
 static void capture_reset_after_dump(void)
 {
     m_ring_head = 0u;
     m_ring_count = 0u;
-    m_trig_state = TRIG_WAIT_BELOW;
-    m_consec_above = 0u;
+    m_trig_state = TRIG_IDLE;
     m_post_count = 0u;
 }
 
@@ -436,14 +432,14 @@ void uwb_event_log_init(void)
 {
     m_ring_head = 0u;
     m_ring_count = 0u;
-    m_trig_state = TRIG_WAIT_BELOW;
-    m_consec_above = 0u;
+    m_trig_state = TRIG_IDLE;
     m_dump_pending = false;
     m_clear_pending = false;
     m_op = OP_IDLE;
 }
 
-void uwb_event_log_push(uint32_t ms, bool valid, float raw_m, float filt_m)
+void uwb_event_log_push(uint32_t ms, bool valid, float raw_m, float filt_m,
+                        const int16_t ia[3], const int16_t ra[3])
 {
     evlog_record_t rec;
 
@@ -455,6 +451,8 @@ void uwb_event_log_push(uint32_t ms, bool valid, float raw_m, float filt_m)
     rec.ms = ms;
     rec.raw_mm = valid ? distance_to_mm(raw_m) : (int16_t)UWB_EVENT_LOG_INVALID_MM;
     rec.filt_mm = distance_to_mm(filt_m);
+    memcpy(rec.ia, ia, sizeof(rec.ia));
+    memcpy(rec.ra, ra, sizeof(rec.ra));
 
     m_ring[m_ring_head] = rec;
     m_ring_head = (m_ring_head + 1u) % EVLOG_RING_CAPACITY;
@@ -463,35 +461,7 @@ void uwb_event_log_push(uint32_t ms, bool valid, float raw_m, float filt_m)
         m_ring_count++;
     }
 
-    if (m_trig_state == TRIG_WAIT_BELOW)
-    {
-        if (valid && (rec.filt_mm < EVLOG_REARM_MM))
-        {
-            m_trig_state = TRIG_ARMED;
-            m_consec_above = 0u;
-        }
-    }
-    else if (m_trig_state == TRIG_ARMED)
-    {
-        if (valid && (rec.filt_mm >= EVLOG_TRIGGER_MM))
-        {
-            m_consec_above++;
-            if (m_consec_above >= EVLOG_TRIGGER_CONSEC)
-            {
-                m_trig_state = TRIG_POST;
-                m_trigger_ms = ms;
-                m_post_count = 0u;
-                m_pre_count = m_ring_count;
-                m_flag_trigger_ms = ms;
-                m_flag_triggered = true;
-            }
-        }
-        else
-        {
-            m_consec_above = 0u;
-        }
-    }
-    else /* TRIG_POST */
+    if (m_trig_state == TRIG_POST)
     {
         m_post_count++;
         if (m_post_count >= EVLOG_POST_RECORDS)
@@ -499,6 +469,20 @@ void uwb_event_log_push(uint32_t ms, bool valid, float raw_m, float filt_m)
             request_dump();
         }
     }
+}
+
+void uwb_event_log_trigger(uint32_t now_ms)
+{
+    if ((m_trig_state != TRIG_IDLE) || m_dump_pending || (m_op != OP_IDLE))
+    {
+        return; /* capture already in progress */
+    }
+    m_trig_state = TRIG_POST;
+    m_trigger_ms = now_ms;
+    m_post_count = 0u;
+    m_pre_count = m_ring_count;
+    m_flag_trigger_ms = now_ms;
+    m_flag_triggered = true;
 }
 
 void uwb_event_log_service(uint32_t now_ms)
@@ -569,7 +553,8 @@ bool uwb_event_log_slot_info(uint32_t slot, uwb_event_log_slot_info_t *info)
 }
 
 bool uwb_event_log_read_record(uint32_t slot, uint32_t idx,
-                               uint32_t *ms, int16_t *raw_mm, int16_t *filt_mm)
+                               uint32_t *ms, int16_t *raw_mm, int16_t *filt_mm,
+                               int16_t ia[3], int16_t ra[3])
 {
     if ((slot >= UWB_EVENT_LOG_SLOT_COUNT) || !slot_is_valid(slot) ||
         (idx >= slot_header(slot)->count))
@@ -582,6 +567,8 @@ bool uwb_event_log_read_record(uint32_t slot, uint32_t idx,
     *ms = records[idx].ms;
     *raw_mm = records[idx].raw_mm;
     *filt_mm = records[idx].filt_mm;
+    memcpy(ia, records[idx].ia, sizeof(records[idx].ia));
+    memcpy(ra, records[idx].ra, sizeof(records[idx].ra));
     return true;
 }
 
