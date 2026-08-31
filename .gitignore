@@ -8,3 +8,5 @@ test_minimal/
 .DS_Store
 nRF5_SDK_17.1.0_*/
 secrets/
+out/
+__pycache__/

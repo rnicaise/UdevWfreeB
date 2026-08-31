@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UWB Config — BLE</title>
+<style>
+  :root {
+    --bg: #0f1419; --panel: #1a2129; --border: #2c3742;
+    --text: #e6edf3; --muted: #8b98a5; --accent: #4da3ff;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+    max-width: 760px; margin-inline: auto;
+  }
+  h1 { font-size: 20px; margin: 8px 0 16px; }
+  h1 small { color: var(--muted); font-weight: normal; font-size: 13px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+  button {
+    background: #232d38; color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 14px; font-size: 14px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #04101f; font-weight: 600; }
+  button.danger { background: #3d1d20; border-color: var(--err); color: var(--err); }
+  select, input[type=text] {
+    background: #10161c; color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 8px 10px; font-size: 14px;
+  }
+  input[type=text] { flex: 1; min-width: 120px; font-family: ui-monospace, monospace; }
+  #status { display: inline-flex; align-items: center; gap: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
+  .dot.connected { background: var(--ok); }
+  .dot.connecting { background: var(--warn); }
+  #log {
+    background: #0a0e12; border: 1px solid var(--border); border-radius: 7px;
+    padding: 10px; height: 260px; overflow-y: auto;
+    font: 12.5px/1.6 ui-monospace, "SF Mono", Menlo, monospace;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  #log .tx { color: var(--accent); }
+  #log .rx { color: var(--text); }
+  #log .rx.ack { color: var(--ok); }
+  #log .rx.err { color: var(--err); }
+  #log .sys { color: var(--muted); font-style: italic; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 16px; font-size: 14px; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; font-family: ui-monospace, monospace; }
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+  #unsupported { display: none; border-color: var(--err); color: var(--err); }
+</style>
+</head>
+<body>
+
+<h1>UWB Config <small>— fenêtre admin BLE (NUS)</small></h1>
+
+<div class="card" id="unsupported">
+  Web Bluetooth non disponible. Utiliser Chrome ou Edge (macOS, Windows, Linux, Android),
+  et servir la page en HTTPS ou depuis localhost.
+</div>
+
+<div class="card">
+  <div class="row">
+    <button id="btnConnect" class="primary">Connecter</button>
+    <button id="btnDisconnect" disabled>Déconnecter</button>
+    <span id="status"><span class="dot" id="dot"></span><span id="statusText">Déconnecté</span></span>
+  </div>
+  <div class="note">
+    Le boîtier n'est visible en BLE que pendant sa fenêtre admin au boot.
+    Power-cycle le boîtier puis clique Connecter. Après une commande, le firmware
+    ACK, se déconnecte et repart en mode UWB — c'est le comportement attendu.
+  </div>
+</div>
+
+<div class="card">
+  <h2>État du boîtier</h2>
+  <dl class="kv">
+    <dt>Rôle</dt><dd id="stRole">—</dd>
+    <dt>Profil UWB</dt><dd id="stProfile">—</dd>
+    <dt>TX power</dt><dd id="stTxpwr">—</dd>
+    <dt>Armement</dt><dd id="stArm">—</dd>
+  </dl>
+  <div class="row" style="margin-top:10px">
+    <button id="btnRefresh" disabled>Lire l'état</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Paramètres</h2>
+  <div class="row">
+    <label>Profil</label>
+    <select id="selProfile">
+      <option value="35">35 — CH5 · 6M8 · PLEN128 (défaut)</option>
+      <option value="36">36 — CH9 · 6M8 · PLEN128</option>
+      <option value="37">37 — CH5 · 6M8 · PLEN256</option>
+      <option value="38">38 — CH5 · 6M8 · PLEN512</option>
+      <option value="40">40 — CH5 · 850k · PLEN1024</option>
+    </select>
+    <button id="btnSetProfile" disabled>Appliquer</button>
+  </div>
+  <div class="row">
+    <label>TX power</label>
+    <select id="selTxpwr">
+      <option value="0">0 — minimum</option>
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3">3</option>
+      <option value="4" selected>4 — défaut</option>
+    </select>
+    <button id="btnSetTxpwr" disabled>Appliquer</button>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Armement (persisté en flash)</h2>
+  <div class="row">
+    <button id="btnArmDist" disabled>Armer distance 2 m</button>
+    <button id="btnArmTilt" disabled>Armer inclinaison 50°</button>
+    <button id="btnDisarm" disabled>Désarmer</button>
+  </div>
+  <div class="row">
+    <button id="btnFire" class="danger" disabled>FIRE immédiat</button>
+    <button id="btnDfu" disabled>Redémarrer en DFU</button>
+  </div>
+  <div class="note">Après sauvegarde d'un armement, le boîtier reset et saute la fenêtre BLE au boot suivant tant qu'il est armé.</div>
+</div>
+
+<div class="card">
+  <h2>Console</h2>
+  <div id="log"></div>
+  <div class="row" style="margin-top:8px">
+    <input type="text" id="cmdInput" placeholder="Commande brute (ex: CFG,GET_ROLE)" disabled>
+    <button id="btnSend" disabled>Envoyer</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+const NUS_SERVICE = "6e400001-b5a3-f393-e0a9-e50e24dcca9e";
+const NUS_RX      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"; // write
+const NUS_TX      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"; // notify
+
+let device = null, rxChar = null, rxBuffer = "";
+
+const $ = id => document.getElementById(id);
+const logEl = $("log");
+const connectedButtons = ["btnDisconnect","btnRefresh","btnSetProfile","btnSetTxpwr",
+  "btnArmDist","btnArmTilt","btnDisarm","btnFire","btnDfu","btnSend","cmdInput"];
+
+if (!navigator.bluetooth) $("unsupported").style.display = "block";
+
+function log(text, cls) {
+  const line = document.createElement("div");
+  line.className = cls;
+  line.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setState(state, label) {
+  $("dot").className = "dot " + state;
+  $("statusText").textContent = label;
+  const on = state === "connected";
+  connectedButtons.forEach(id => $(id).disabled = !on);
+  $("btnConnect").disabled = on || state === "connecting";
+}
+
+function handleLine(text) {
+  const cls = text.startsWith("ACK") ? "rx ack" : text.startsWith("ERR") ? "rx err" : "rx";
+  log(text, cls);
+  // Mise à jour de l'état affiché
+  if (text.startsWith("ROLE,"))            $("stRole").textContent = text.slice(5);
+  else if (text.startsWith("PROFILE,"))    $("stProfile").textContent = text.slice(8);
+  else if (text.startsWith("TXPWR,"))      $("stTxpwr").textContent = text.slice(6);
+  else if (text.startsWith("ARM,") && !text.startsWith("ARM,WRITE")) $("stArm").textContent = text.slice(4);
+  else if (text.startsWith("ACK,TXPWR,"))  $("stTxpwr").textContent = text.split(",")[2];
+  else if (text.startsWith("ACK,PROFILE_SWITCH_ARMED,")) $("stProfile").textContent = text.split(",")[2];
+  else if (text.startsWith("ACK,ARM,"))    $("stArm").textContent = text.split(",")[2];
+}
+
+function onNotify(event) {
+  rxBuffer += new TextDecoder().decode(event.target.value);
+  let idx;
+  while ((idx = rxBuffer.indexOf("\n")) >= 0) {
+    const line = rxBuffer.slice(0, idx).replace(/\r$/, "").trim();
+    rxBuffer = rxBuffer.slice(idx + 1);
+    if (line) handleLine(line);
+  }
+}
+
+function onDisconnected() {
+  setState("", "Déconnecté");
+  log("Boîtier déconnecté (retour en mode UWB si commande envoyée)", "sys");
+  device = null; rxChar = null; rxBuffer = "";
+}
+
+async function connect() {
+  try {
+    setState("connecting", "Recherche…");
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ namePrefix: "UWB" }],
+      optionalServices: [NUS_SERVICE],
+    });
+    device.addEventListener("gattserverdisconnected", onDisconnected);
+    setState("connecting", "Connexion GATT…");
+    const server = await device.gatt.connect();
+    const service = await server.getPrimaryService(NUS_SERVICE);
+    const txChar = await service.getCharacteristic(NUS_TX);
+    rxChar = await service.getCharacteristic(NUS_RX);
+    await txChar.startNotifications();
+    txChar.addEventListener("characteristicvaluechanged", onNotify);
+    setState("connected", `Connecté à ${device.name || "UWB"}`);
+    log(`Connecté à ${device.name || "UWB"}`, "sys");
+    await refresh();
+  } catch (e) {
+    setState("", "Déconnecté");
+    if (e.name !== "NotFoundError") log(`Erreur: ${e.message}`, "rx err");
+  }
+}
+
+async function send(cmd) {
+  if (!rxChar) return;
+  try {
+    log(`> ${cmd}`, "tx");
+    await rxChar.writeValue(new TextEncoder().encode(cmd + "\n"));
+  } catch (e) {
+    log(`Erreur envoi: ${e.message}`, "rx err");
+  }
+}
+
+async function refresh() {
+  for (const cmd of ["CFG,GET_ROLE", "CFG,GET_PROFILE", "CFG,GET_TXPWR", "ARM,GET"]) {
+    await send(cmd);
+    await new Promise(r => setTimeout(r, 150));
+  }
+}
+
+$("btnConnect").onclick = connect;
+$("btnDisconnect").onclick = () => device?.gatt.disconnect();
+$("btnRefresh").onclick = refresh;
+$("btnSetProfile").onclick = () => send(`CFG,PROFILE,${$("selProfile").value}`);
+$("btnSetTxpwr").onclick = () => send(`CFG,TXPWR,${$("selTxpwr").value}`);
+$("btnArmDist").onclick = () => send("ARM,DIST,2.00");
+$("btnArmTilt").onclick = () => send("ARM,TILT,50");
+$("btnDisarm").onclick = () => send("ARM,DISARM");
+$("btnDfu").onclick = () => send("BOOT,DFU");
+$("btnFire").onclick = () => {
+  if (confirm("Déclencher FIRE immédiatement ?")) send("PYRO,FIRE_NOW");
+};
+$("btnSend").onclick = () => {
+  const cmd = $("cmdInput").value.trim();
+  if (cmd) { send(cmd); $("cmdInput").value = ""; }
+};
+$("cmdInput").addEventListener("keydown", e => { if (e.key === "Enter") $("btnSend").click(); });
+</script>
+</body>
+</html>
