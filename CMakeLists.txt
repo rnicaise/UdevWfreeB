@@ -97,6 +97,9 @@ set(UWB_DFU_APP_FLASH_ADDR 0x00001000 CACHE STRING "Application flash start when
 set(UWB_DFU_BOOTLOADER_START 0x00078000 CACHE STRING "Reserved bootloader start address for nRF52833 Secure DFU")
 set(UWB_BLE_GATT_APP_FLASH_ADDR 0x0001C000 CACHE STRING "Application flash start for nRF52833 S113 SoftDevice")
 set(UWB_BLE_GATT_SETTINGS_FLASH_ADDR 0x00077000 CACHE STRING "Reserved flash page for BLE GATT persistent settings")
+# Event log ("black box") region: 6 slots x 20 KB, right below the settings
+# page. The app flash region ends here so the linker can never overlap it.
+set(UWB_BLE_GATT_EVENTLOG_FLASH_ADDR 0x00059000 CACHE STRING "Reserved flash region for UWB event log capture slots")
 set(UWB_BLE_GATT_APP_RAM_ADDR 0x20002608 CACHE STRING "Application RAM start for nRF52833 S113 SoftDevice")
 set(UWB_NRF5_SDK_PATH "${CMAKE_SOURCE_DIR}/nRF5_SDK_17.1.0_ddde560" CACHE PATH "Path to local Nordic nRF5 SDK")
 
@@ -126,7 +129,7 @@ if(UWB_BLE_GATT_ENABLED)
     if(NOT EXISTS "${UWB_NRF5_SDK_PATH}/components/softdevice/s113/hex/s113_nrf52_7.2.0_softdevice.hex")
         message(FATAL_ERROR "UWB_BLE_GATT_ENABLED requires nRF5 SDK 17.1.0 at UWB_NRF5_SDK_PATH=${UWB_NRF5_SDK_PATH}")
     endif()
-    math(EXPR UWB_BLE_GATT_APP_FLASH_SIZE "${UWB_BLE_GATT_SETTINGS_FLASH_ADDR} - ${UWB_BLE_GATT_APP_FLASH_ADDR}" OUTPUT_FORMAT HEXADECIMAL)
+    math(EXPR UWB_BLE_GATT_APP_FLASH_SIZE "${UWB_BLE_GATT_EVENTLOG_FLASH_ADDR} - ${UWB_BLE_GATT_APP_FLASH_ADDR}" OUTPUT_FORMAT HEXADECIMAL)
     set(FLASH_ADDR ${UWB_BLE_GATT_APP_FLASH_ADDR} CACHE STRING "Flash start address" FORCE)
     set(FLASH_SIZE ${UWB_BLE_GATT_APP_FLASH_SIZE} CACHE STRING "Flash size" FORCE)
     set(RAM_ADDR ${UWB_BLE_GATT_APP_RAM_ADDR} CACHE STRING "Ram start address" FORCE)
@@ -291,6 +294,7 @@ if(UWB_BLE_GATT_ENABLED)
         ${CMAKE_SOURCE_DIR}/src/ble/ble_nus_bridge.c
         ${CMAKE_SOURCE_DIR}/src/ble/softdevice_svc_forwarder.S
         ${CMAKE_SOURCE_DIR}/src/common/uwb_persistent_settings.c
+        ${CMAKE_SOURCE_DIR}/src/common/uwb_event_log.c
         ${NRF5_SDK_PATH}/components/ble/ble_services/ble_nus/ble_nus.c
         ${NRF5_SDK_PATH}/components/ble/ble_link_ctx_manager/ble_link_ctx_manager.c
         ${NRF5_SDK_PATH}/components/ble/common/ble_advdata.c
@@ -458,6 +462,7 @@ if(UWB_BLE_GATT_ENABLED)
         NRF_SDH_BLE_ENABLED=1
         NRF_SDH_SOC_ENABLED=1
         UWB_SETTINGS_FLASH_ADDR=${UWB_BLE_GATT_SETTINGS_FLASH_ADDR}
+        UWB_EVENTLOG_FLASH_ADDR=${UWB_BLE_GATT_EVENTLOG_FLASH_ADDR}
         NRF_SDH_CLOCK_LF_SRC=0
         NRF_SDH_CLOCK_LF_RC_CTIV=16
         NRF_SDH_CLOCK_LF_RC_TEMP_CTIV=2

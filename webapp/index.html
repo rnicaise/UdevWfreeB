@@ -142,6 +142,18 @@
 </div>
 
 <div class="card">
+  <h2>Boîte noire — chutes enregistrées</h2>
+  <div class="row">
+    <button id="btnLogList" disabled>Lister les chutes</button>
+    <button id="btnLogClear" class="danger" disabled>Tout effacer</button>
+    <span id="logStatus" class="note"></span>
+  </div>
+  <div id="logSlots" style="margin-top:8px"></div>
+  <div class="note">Chaque chute = ~5 s avant + ~1 s après le franchissement du seuil
+    de distance (1 m en test), à pleine cadence. 6 emplacements en rotation.</div>
+</div>
+
+<div class="card">
   <h2>Console</h2>
   <div id="log"></div>
   <div class="row" style="margin-top:8px">
@@ -163,7 +175,7 @@ const $ = id => document.getElementById(id);
 const logEl = $("log");
 const connectedButtons = ["btnDisconnect","btnRefresh","btnSetProfile","btnSetTxpwr",
   "btnArmDist","btnArmTilt","btnDisarm","btnFire","btnDfu","btnSend","cmdInput",
-  "btnSetName","nameInput"];
+  "btnSetName","nameInput","btnLogList","btnLogClear"];
 
 if (!navigator.bluetooth) $("unsupported").style.display = "block";
 
@@ -184,6 +196,15 @@ function setState(state, label) {
 }
 
 function handleLine(text) {
+  // Boîte noire : lignes de données brutes (haute fréquence, pas de console)
+  if (logRead.active && (text.startsWith("L,") || text.startsWith("LOG,BEGIN") || text.startsWith("LOG,END"))) {
+    handleLogLine(text);
+    return;
+  }
+  if (text.startsWith("LOG,SLOT,") || text === "LOG,END") {
+    handleLogListLine(text);
+    return;
+  }
   const cls = text.startsWith("ACK") ? "rx ack" : text.startsWith("ERR") ? "rx err" : "rx";
   log(text, cls);
   // Mise à jour de l'état affiché
@@ -280,6 +301,86 @@ $("btnSend").onclick = () => {
   if (cmd) { send(cmd); $("cmdInput").value = ""; }
 };
 $("cmdInput").addEventListener("keydown", e => { if (e.key === "Enter") $("btnSend").click(); });
+
+// --- Boîte noire (event log) ---
+const logRead = { active: false, slot: null, header: null, rows: [], expected: 0 };
+
+function handleLogListLine(text) {
+  if (text === "LOG,END") {
+    $("logStatus").textContent = logSlotsFound ? "" : "Aucune chute enregistrée";
+    return;
+  }
+  // LOG,SLOT,<i>,<seq>,<trigger_ms>,<count>,<pre_count>
+  const p = text.split(",");
+  const [slot, seq, trigMs, count, preCount] = [p[2], p[3], p[4], p[5], p[6]];
+  logSlotsFound = true;
+  const row = document.createElement("div");
+  row.className = "row";
+  const durS = (count / 400).toFixed(1);
+  row.innerHTML = `<span>Chute #${seq} — slot ${slot} · ${count} pts (~${durS} s) · trig t+${(trigMs/1000).toFixed(1)} s</span>`;
+  const btn = document.createElement("button");
+  btn.textContent = "Télécharger CSV";
+  btn.onclick = () => startLogRead(slot, seq);
+  row.appendChild(btn);
+  $("logSlots").appendChild(row);
+}
+
+let logSlotsFound = false;
+
+function startLogRead(slot, seq) {
+  logRead.active = true;
+  logRead.slot = slot;
+  logRead.seq = seq;
+  logRead.header = null;
+  logRead.rows = [];
+  $("logStatus").textContent = `Lecture chute #${seq}…`;
+  send(`LOG,READ,${slot}`);
+}
+
+function handleLogLine(text) {
+  if (text.startsWith("LOG,BEGIN")) {
+    // LOG,BEGIN,<slot>,<seq>,<trigger_ms>,<count>,<pre_count>
+    const p = text.split(",");
+    logRead.header = { slot: p[2], seq: p[3], triggerMs: +p[4], count: +p[5], preCount: +p[6] };
+    logRead.expected = +p[5];
+    return;
+  }
+  if (text.startsWith("L,")) {
+    logRead.rows.push(text.slice(2));
+    if (logRead.rows.length % 200 === 0) {
+      $("logStatus").textContent = `Lecture… ${logRead.rows.length}/${logRead.expected}`;
+    }
+    return;
+  }
+  if (text.startsWith("LOG,END")) {
+    logRead.active = false;
+    const h = logRead.header || {};
+    const csv = ["ms,dist_raw_mm,dist_filt_mm",
+      `# chute seq=${h.seq} slot=${h.slot} trigger_ms=${h.triggerMs} pre_count=${h.preCount}`,
+      ...logRead.rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `chute-${h.seq || "x"}-${new Date().toISOString().slice(0,19).replace(/[:T]/g,"")}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    $("logStatus").textContent = `Chute #${h.seq} : ${logRead.rows.length} points exportés`;
+    log(`Chute #${h.seq} téléchargée (${logRead.rows.length} points)`, "sys");
+  }
+}
+
+$("btnLogList").onclick = () => {
+  $("logSlots").innerHTML = "";
+  logSlotsFound = false;
+  $("logStatus").textContent = "Recherche…";
+  send("LOG,LIST");
+};
+$("btnLogClear").onclick = () => {
+  if (confirm("Effacer toutes les chutes enregistrées ?")) {
+    $("logSlots").innerHTML = "";
+    send("LOG,CLEAR");
+  }
+};
 </script>
 </body>
 </html>

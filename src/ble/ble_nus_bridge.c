@@ -14,6 +14,7 @@
 #include "nrf_ble_gatt.h"
 #include "nrf_sdh.h"
 #include "nrf_sdh_ble.h"
+#include "nrf_soc.h"
 
 #define APP_BLE_CONN_CFG_TAG 1u
 #define APP_BLE_OBSERVER_PRIO 3u
@@ -357,6 +358,66 @@ void ble_nus_bridge_send_line(const char *line)
     uint8_t newline = '\n';
     uint16_t newline_len = 1u;
     (void)ble_nus_data_send(&m_nus, &newline, &newline_len, m_conn_handle);
+}
+
+bool ble_nus_bridge_send_line_wait(const char *line)
+{
+    static const uint8_t newline = '\n';
+    const uint8_t *data = (const uint8_t *)line;
+    size_t remaining;
+    bool newline_sent = false;
+
+    if (line == NULL)
+    {
+        return false;
+    }
+    remaining = strlen(line);
+
+    while (!newline_sent)
+    {
+        const uint8_t *src;
+        uint16_t chunk_len;
+        uint32_t err_code;
+
+        if ((m_conn_handle == BLE_CONN_HANDLE_INVALID) || !m_notifications_enabled)
+        {
+            return false;
+        }
+
+        if (remaining > 0u)
+        {
+            src = data;
+            chunk_len = (remaining > m_ble_nus_max_data_len) ? m_ble_nus_max_data_len : (uint16_t)remaining;
+        }
+        else
+        {
+            src = &newline;
+            chunk_len = 1u;
+        }
+
+        err_code = ble_nus_data_send(&m_nus, (uint8_t *)src, &chunk_len, m_conn_handle);
+        if ((err_code == NRF_ERROR_RESOURCES) || (err_code == NRF_ERROR_BUSY))
+        {
+            /* TX buffers full: sleep until the next BLE event frees one. */
+            (void)sd_app_evt_wait();
+            continue;
+        }
+        if (err_code != NRF_SUCCESS)
+        {
+            return false;
+        }
+
+        if (remaining > 0u)
+        {
+            data += chunk_len;
+            remaining -= chunk_len;
+        }
+        else
+        {
+            newline_sent = true;
+        }
+    }
+    return true;
 }
 
 void ble_nus_bridge_disconnect_and_stop_advertising(void)

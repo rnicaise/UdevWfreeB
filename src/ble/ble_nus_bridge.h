@@ -11,6 +11,9 @@ bool ble_nus_bridge_is_client_ready(void);
 bool ble_nus_bridge_is_advertising_enabled(void);
 bool ble_nus_bridge_read_command(char *dst, size_t dst_size);
 void ble_nus_bridge_send_line(const char *line);
+/* Blocking variant: waits for TX buffers instead of dropping. Returns
+ * false if the client disconnects or notifications are disabled. */
+bool ble_nus_bridge_send_line_wait(const char *line);
 void ble_nus_bridge_disconnect_and_stop_advertising(void);
 
 #endif

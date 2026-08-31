@@ -35,6 +35,7 @@
 #include "../common/radio_quality.h"
 #ifdef UWB_BLE_GATT_ENABLED
 #include "../common/uwb_persistent_settings.h"
+#include "../common/uwb_event_log.h"
 #endif
 #include "../accel/accel.h"
 #include "../board/pyro_buzzer.h"
@@ -408,6 +409,12 @@ static const char *ble_gatt_arm_ack_for_mode(uint32_t arm_mode)
 
 static bool ble_gatt_start_settings_write(uint32_t arm_mode)
 {
+    if (uwb_event_log_busy())
+    {
+        app_log_write("ERR,LOG_BUSY");
+        return true;
+    }
+
     if (!uwb_persistent_settings_write_arm(arm_mode))
     {
         app_log_write("ERR,ARM_SETTINGS_BUSY");
@@ -425,6 +432,12 @@ static bool ble_gatt_start_name_write(const char *name)
     if (!uwb_persistent_settings_name_is_valid(name))
     {
         app_log_write("ERR,NAME_INVALID");
+        return true;
+    }
+
+    if (uwb_event_log_busy())
+    {
+        app_log_write("ERR,LOG_BUSY");
         return true;
     }
 
@@ -473,6 +486,44 @@ static void ble_gatt_service_settings_write(void)
             ble_gatt_shutdown_run_armed_after_reset = false;
             ble_gatt_schedule_admin_shutdown();
         }
+    }
+}
+
+/* Report one-shot event-log flags (trigger, save done, errors). */
+static void ble_gatt_service_event_log(void)
+{
+    uint32_t v0;
+    uint32_t v1;
+
+    if (uwb_event_log_consume_triggered(&v0))
+    {
+        snprintf(output_buf, sizeof(output_buf), "EVENT,LOG_TRIGGER,%lu", (unsigned long)v0);
+        app_log_write(output_buf);
+    }
+    if (uwb_event_log_consume_saved(&v0, &v1))
+    {
+        snprintf(output_buf, sizeof(output_buf), "EVENT,LOG_SAVED,%lu,%lu",
+                 (unsigned long)v0, (unsigned long)v1);
+        app_log_write(output_buf);
+    }
+    if (uwb_event_log_consume_error())
+    {
+        app_log_write("ERR,LOG_SAVE_FAILED");
+    }
+    if (uwb_event_log_consume_cleared())
+    {
+        app_log_write("ACK,LOG_CLEARED");
+    }
+}
+
+/* Stream a readout line to UART and, when a client is connected, over
+ * BLE with back-pressure (blocking send). */
+static void log_stream_line(const char *line)
+{
+    uart_log_write(line);
+    if (ble_nus_bridge_is_client_ready())
+    {
+        (void)ble_nus_bridge_send_line_wait(line);
     }
 }
 #endif
@@ -1137,6 +1188,76 @@ static bool handle_app_command(const char *cmd)
 #endif
     }
 
+#ifdef UWB_BLE_GATT_ENABLED
+    if (strcmp(cmd, "LOG,LIST") == 0)
+    {
+        for (uint32_t i = 0u; i < UWB_EVENT_LOG_SLOT_COUNT; i++)
+        {
+            uwb_event_log_slot_info_t info;
+            if (uwb_event_log_slot_info(i, &info))
+            {
+                snprintf(output_buf, sizeof(output_buf), "LOG,SLOT,%lu,%lu,%lu,%lu,%lu",
+                         (unsigned long)i, (unsigned long)info.seq,
+                         (unsigned long)info.trigger_ms,
+                         (unsigned long)info.count, (unsigned long)info.pre_count);
+                log_stream_line(output_buf);
+            }
+        }
+        log_stream_line("LOG,END");
+        return false;
+    }
+
+    if (strncmp(cmd, "LOG,READ,", 9) == 0)
+    {
+        uint32_t slot = (uint32_t)atoi(cmd + 9);
+        uwb_event_log_slot_info_t info;
+
+        if (!uwb_event_log_slot_info(slot, &info))
+        {
+            app_log_write("ERR,LOG_SLOT_INVALID");
+            return false;
+        }
+
+        snprintf(output_buf, sizeof(output_buf), "LOG,BEGIN,%lu,%lu,%lu,%lu,%lu",
+                 (unsigned long)slot, (unsigned long)info.seq,
+                 (unsigned long)info.trigger_ms,
+                 (unsigned long)info.count, (unsigned long)info.pre_count);
+        log_stream_line(output_buf);
+
+        for (uint32_t i = 0u; i < info.count; i++)
+        {
+            uint32_t ms;
+            int16_t raw_mm;
+            int16_t filt_mm;
+            if (!uwb_event_log_read_record(slot, i, &ms, &raw_mm, &filt_mm))
+            {
+                break;
+            }
+            snprintf(output_buf, sizeof(output_buf), "L,%lu,%d,%d",
+                     (unsigned long)ms, (int)raw_mm, (int)filt_mm);
+            log_stream_line(output_buf);
+        }
+
+        snprintf(output_buf, sizeof(output_buf), "LOG,END,%lu,%lu",
+                 (unsigned long)slot, (unsigned long)info.count);
+        log_stream_line(output_buf);
+        return false;
+    }
+
+    if (strcmp(cmd, "LOG,CLEAR") == 0)
+    {
+        if (uwb_event_log_clear())
+        {
+            app_log_write("ACK,LOG_CLEAR_STARTED");
+        }
+        else
+        {
+            app_log_write("ERR,LOG_BUSY");
+        }
+        return false;
+    }
+#endif
+
     app_log_write("ERR,READ_ONLY_SS_TWR");
     return true;
 }
@@ -1229,6 +1350,7 @@ int ss_twr_initiator_custom(void)
 
 #ifdef UWB_BLE_GATT_ENABLED
     uwb_persistent_settings_init();
+    uwb_event_log_init();
     {
         uwb_persistent_settings_t settings = uwb_persistent_settings_get();
         uint32_t boot_mode = NRF_POWER->GPREGRET;
@@ -1274,6 +1396,10 @@ int ss_twr_initiator_custom(void)
         process_app_commands();
 
 #ifdef UWB_BLE_GATT_ENABLED
+        /* Event log runs in every mode (admin and armed). */
+        uwb_event_log_service(rtc2_ms());
+        ble_gatt_service_event_log();
+
     if (ble_gatt_admin_enabled)
     {
             uint32_t now_ms = rtc2_ms();
@@ -1564,6 +1690,9 @@ int ss_twr_initiator_custom(void)
                                                responder_load_mv, responder_load_connected);
 
                             safety_service_triggers(valid, dist_filt, &accel_data);
+#ifdef UWB_BLE_GATT_ENABLED
+                            uwb_event_log_push(ms, valid, distance, dist_filt);
+#endif
 
 #ifdef UWB_BLE_ADV_ENABLED
                             if ((uint32_t)(ms - ble_adv_last_ms) >= BLE_ADV_PERIOD_MS)
