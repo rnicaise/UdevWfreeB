@@ -68,6 +68,10 @@ if(NOT DEFINED UWB_PURE)
     set(UWB_PURE OFF CACHE BOOL "Pure UWB build: no BLE, no IMU, no pyro")
 endif()
 
+if(NOT DEFINED UWB_UART_1M)
+    set(UWB_UART_1M ON CACHE BOOL "Pure UWB UART at 1 Mbps (OFF = 460800, for J-Link VCOM)")
+endif()
+
 if(NOT DEFINED UWB_ACCEL_TARGET)
     set(UWB_ACCEL_TARGET "legacy" CACHE STRING "Accelerometer hardware target: legacy|gena|auto")
 endif()
@@ -419,9 +423,9 @@ target_compile_definitions(${TARGET_ELF} PRIVATE
     # Role selection for main.c.
     $<$<STREQUAL:${UWB_ROLE},initiator>:UWB_ROLE_INITIATOR>
     $<$<STREQUAL:${UWB_ROLE},responder>:UWB_ROLE_RESPONDER>
-    # Pure UWB build: no BLE, no IMU, HFXO forced, UART at 1 Mbps.
+    # Pure UWB build: no BLE, no IMU, HFXO forced, UART at 1 Mbps (or 460800 if UWB_UART_1M=OFF).
     $<$<BOOL:${UWB_PURE}>:UWB_PURE>
-    $<$<BOOL:${UWB_PURE}>:UWB_UART_BAUD_1M>
+    $<$<AND:$<BOOL:${UWB_PURE}>,$<BOOL:${UWB_UART_1M}>>:UWB_UART_BAUD_1M>
     # Accelerometer hardware generation selection.
     $<$<STREQUAL:${UWB_ACCEL_TARGET},legacy>:UWB_ACCEL_TARGET_LEGACY>
     $<$<STREQUAL:${UWB_ACCEL_TARGET},gena>:UWB_ACCEL_TARGET_GENA>

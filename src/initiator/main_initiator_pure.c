@@ -72,6 +72,24 @@ static uint32_t gate_last_valid_ms = 0;
 static bool gate_has_baseline = false;
 static uint8_t gate_consecutive_rejects = 0;
 
+/* -- Millisecond timebase: RTC2 COUNTER is 24-bit @32768 Hz and wraps
+ * every 512 s. Track wraps to expose a monotonic ms counter. -- */
+static uint32_t rtc_last_counter = 0;
+static uint64_t rtc_base_ticks = 0;
+
+static uint32_t timebase_ms(void)
+{
+    uint32_t counter = NRF_RTC2->COUNTER;
+
+    if (counter < rtc_last_counter)
+    {
+        rtc_base_ticks += (1ull << 24);
+    }
+    rtc_last_counter = counter;
+
+    return (uint32_t)(((rtc_base_ticks + counter) * 1000u) / 32768u);
+}
+
 static bool gate_check_distance(float distance_m, uint32_t now_ms)
 {
     float max_delta_m;
@@ -158,6 +176,16 @@ static float median_filter_push(float distance_m)
     return sorted[median_count / 2u];
 }
 
+/* Warmup: track (not latch) the median output for the first samples so a
+ * boot transient cannot seed the baseline. Recovery: if the median output
+ * stays outside the innovation gate for SMOOTH_RESYNC_REJECTS consecutive
+ * valid samples (~0.2 s at 920 Hz), re-seed instead of staying latched. */
+#define SMOOTH_WARMUP_SAMPLES  50u
+#define SMOOTH_RESYNC_REJECTS  200u
+
+static uint16_t smooth_warmup_count = 0;
+static uint16_t smooth_consecutive_rejects = 0;
+
 static float smooth_filter_push(float distance_m, bool valid)
 {
     const float innovation_gate_m = 0.12f;
@@ -171,7 +199,11 @@ static float smooth_filter_push(float distance_m, bool valid)
     if (!smooth_has_baseline)
     {
         smooth_distance_m = distance_m;
-        smooth_has_baseline = true;
+        smooth_warmup_count++;
+        if (smooth_warmup_count >= SMOOTH_WARMUP_SAMPLES)
+        {
+            smooth_has_baseline = true;
+        }
         return smooth_distance_m;
     }
 
@@ -179,6 +211,16 @@ static float smooth_filter_push(float distance_m, bool valid)
         (distance_m <= (smooth_distance_m + innovation_gate_m)))
     {
         smooth_distance_m = smooth_distance_m + (alpha * (distance_m - smooth_distance_m));
+        smooth_consecutive_rejects = 0;
+    }
+    else
+    {
+        smooth_consecutive_rejects++;
+        if (smooth_consecutive_rejects >= SMOOTH_RESYNC_REJECTS)
+        {
+            smooth_distance_m = distance_m;
+            smooth_consecutive_rejects = 0;
+        }
     }
 
     return smooth_distance_m;
@@ -373,7 +415,7 @@ int ss_twr_initiator_pure(void)
                 distance = tof_dtu * (float)DWT_TIME_UNITS * (float)SPEED_OF_LIGHT;
                 ranging_count++;
 
-                ms = (uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u);
+                ms = timebase_ms();
 
                 valid = gate_check_distance(distance, ms);
                 if (valid)

@@ -27,49 +27,33 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        val permissions = mutableListOf(
-            Manifest.permission.ACCESS_COARSE_LOCATION,
-            Manifest.permission.ACCESS_FINE_LOCATION,
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            permissions.add(Manifest.permission.BLUETOOTH_SCAN)
-            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
-        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+            permissionsLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
         }
-        permissionsLauncher.launch(permissions.toTypedArray())
 
         setContent {
             UwbReceiverTheme {
                 val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-                val shareUri by viewModel.shareUri.collectAsStateWithLifecycle()
+                val shareRequest by viewModel.shareRequest.collectAsStateWithLifecycle()
 
                 UwbMainScreen(
                     state = uiState,
                     onConnect = viewModel::connect,
-                    onStartBleScan = viewModel::startBleScan,
                     onDisconnect = viewModel::disconnect,
-                    onFire = viewModel::fire,
-                    onArmDistance2m = viewModel::armDistance2m,
-                    onArmTilt50deg = viewModel::armTilt50deg,
                     onStartRecording = viewModel::startRecording,
                     onStopRecording = viewModel::stopRecording,
-                    onShare = { viewModel.requestShare(uiState.runtime.lastSavedUri) },
-                    onGreenChange = viewModel::updateGreenMax,
-                    onOrangeChange = viewModel::updateOrangeMax,
-                    onBikeBoxPositionChange = viewModel::updateBikeBoxPosition,
-                    onVestBoxPositionChange = viewModel::updateVestBoxPosition,
+                    onShareCsv = viewModel::shareCsv,
+                    onShareReport = viewModel::shareReport,
                 )
 
-                LaunchedEffect(shareUri) {
-                    val uri = shareUri ?: return@LaunchedEffect
+                LaunchedEffect(shareRequest) {
+                    val request = shareRequest ?: return@LaunchedEffect
                     val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                        type = "text/csv"
-                        putExtra(Intent.EXTRA_STREAM, uri)
+                        type = request.mimeType
+                        putExtra(Intent.EXTRA_STREAM, request.uri)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
-                    startActivity(Intent.createChooser(sendIntent, "Share CSV"))
+                    startActivity(Intent.createChooser(sendIntent, "Share"))
                     viewModel.consumeShareRequest()
                 }
             }
