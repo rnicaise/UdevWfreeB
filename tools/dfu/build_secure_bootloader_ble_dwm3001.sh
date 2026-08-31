@@ -46,6 +46,19 @@ mkdir -p "$armgcc_dir"
 cp "$source_dir/armgcc/Makefile" "$armgcc_dir/Makefile"
 cp "$source_dir/armgcc/secure_bootloader_gcc_nrf52.ld" "$armgcc_dir/secure_bootloader_gcc_nrf52.ld"
 
+# Patch BLE transport: keep the SAME GAP address as the application so the
+# web page can reconnect to the bootloader without a second Bluetooth chooser.
+cp "$sdk_root/components/libraries/bootloader/ble_dfu/nrf_dfu_ble.c" "$work_dir/nrf_dfu_ble.c"
+python3 - <<'PY' "$work_dir/nrf_dfu_ble.c"
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text()
+old = "    /* Increase the BLE address by one when advertising openly. */\n    addr.addr[0] += 1;\n"
+assert old in text
+path.write_text(text.replace(old, "    /* Keep the application's BLE address so web clients can silently reconnect. */\n"))
+PY
+
 python3 - <<'PY' "$armgcc_dir/Makefile" "$sdk_root" "$gnu_root"
 from pathlib import Path
 import sys
@@ -58,6 +71,7 @@ text = text.replace('PROJECT_NAME     := secure_bootloader_ble_s113_pca10100', '
 text = text.replace('SDK_ROOT := ../../../../..', f'SDK_ROOT := {sdk_root}')
 text = text.replace('PROJ_DIR := ../..', 'PROJ_DIR := $(SDK_ROOT)/examples/dfu/secure_bootloader')
 text = text.replace('$(PROJ_DIR)/../dfu_public_key.c', f'{makefile.parent.parent}/dfu_public_key.c')
+text = text.replace('$(SDK_ROOT)/components/libraries/bootloader/ble_dfu/nrf_dfu_ble.c', f'{makefile.parent.parent}/nrf_dfu_ble.c')
 text = text.replace('CFLAGS += -DBOARD_PCA10100', 'CFLAGS += -DBOARD_CUSTOM')
 text = text.replace('ASMFLAGS += -DBOARD_PCA10100', 'ASMFLAGS += -DBOARD_CUSTOM')
 text = text.replace('CFLAGS += -Wall -Werror', 'CFLAGS += -Wall -Werror -Wno-array-bounds -Wno-error=array-bounds')
@@ -79,6 +93,8 @@ replacements = {
     # Give the web page time to reconnect and stream the update
     '#define NRF_BL_DFU_INACTIVITY_TIMEOUT_MS 120000': '#define NRF_BL_DFU_INACTIVITY_TIMEOUT_MS 120000',
     '#define NRF_DFU_BLE_ADV_NAME "DfuTarg"': '#define NRF_DFU_BLE_ADV_NAME "UWBR_DFU"',
+    # Same GAP address as the app: expose Service Changed so hosts drop their GATT cache
+    '#define NRF_SDH_BLE_SERVICE_CHANGED 0': '#define NRF_SDH_BLE_SERVICE_CHANGED 1',
 }
 for old, new in replacements.items():
     assert old in text, f'missing: {old}'
