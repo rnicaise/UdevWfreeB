@@ -66,6 +66,15 @@
             }
         },
         {
+            "name": "initiator_legacy_ble_gatt_debug",
+            "inherits": "initiator_legacy_debug",
+            "displayName": "Initiator Legacy BLE GATT NUS (Debug)",
+            "description": "Module A Legacy LIS2DH12 exposes UART-compatible commands and telemetry over Nordic UART Service BLE GATT",
+            "cacheVariables": {
+                "UWB_BLE_GATT_ENABLED": "ON"
+            }
+        },
+        {
             "name": "initiator_gena_ble_gatt_no_uart_rx_debug",
             "inherits": "initiator_gena_ble_gatt_debug",
             "displayName": "Initiator GenA BLE GATT NUS, UART RX Off (Debug)",
@@ -310,6 +319,10 @@
         {
             "name": "initiator_gena_ble_gatt_debug",
             "configurePreset": "initiator_gena_ble_gatt_debug"
+        },
+        {
+            "name": "initiator_legacy_ble_gatt_debug",
+            "configurePreset": "initiator_legacy_ble_gatt_debug"
         },
         {
             "name": "initiator_gena_ble_gatt_no_uart_rx_debug",
