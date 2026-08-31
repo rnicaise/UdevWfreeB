@@ -18,6 +18,7 @@
 #define APP_BLE_CONN_CFG_TAG 1u
 #define APP_BLE_OBSERVER_PRIO 3u
 #define DEVICE_NAME "UWB"
+#define DEVICE_NAME_MAX_LEN 15u
 #define NUS_SERVICE_UUID_TYPE BLE_UUID_TYPE_VENDOR_BEGIN
 #define APP_ADV_INTERVAL 160u
 #define MIN_CONN_INTERVAL MSEC_TO_UNITS(20, UNIT_1_25_MS)
@@ -33,6 +34,7 @@ NRF_BLE_GATT_DEF(m_gatt);
 
 static uint16_t m_conn_handle = BLE_CONN_HANDLE_INVALID;
 static uint16_t m_ble_nus_max_data_len = BLE_GATT_ATT_MTU_DEFAULT - 3u;
+static char m_device_name[DEVICE_NAME_MAX_LEN + 1u] = DEVICE_NAME;
 static bool m_notifications_enabled = false;
 static bool m_advertising_enabled = true;
 static bool m_advertising_active = false;
@@ -102,7 +104,7 @@ static void gap_params_init(void)
 
     BLE_GAP_CONN_SEC_MODE_SET_OPEN(&sec_mode);
 
-    err_code = sd_ble_gap_device_name_set(&sec_mode, (const uint8_t *)DEVICE_NAME, strlen(DEVICE_NAME));
+    err_code = sd_ble_gap_device_name_set(&sec_mode, (const uint8_t *)m_device_name, strlen(m_device_name));
     APP_ERROR_CHECK(err_code);
 
     memset(&gap_conn_params, 0, sizeof(gap_conn_params));
@@ -271,6 +273,16 @@ static void ble_evt_handler(ble_evt_t const *p_ble_evt, void *p_context)
 }
 
 NRF_SDH_BLE_OBSERVER(m_ble_observer, APP_BLE_OBSERVER_PRIO, ble_evt_handler, NULL);
+
+void ble_nus_bridge_set_device_name(const char *name)
+{
+    if ((name == NULL) || (name[0] == '\0'))
+    {
+        return;
+    }
+    strncpy(m_device_name, name, DEVICE_NAME_MAX_LEN);
+    m_device_name[DEVICE_NAME_MAX_LEN] = '\0';
+}
 
 void ble_nus_bridge_init(void)
 {

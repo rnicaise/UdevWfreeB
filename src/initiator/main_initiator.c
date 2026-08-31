@@ -327,6 +327,7 @@ static void safety_service_triggers(bool distance_valid, float distance_m, const
 static bool ble_gatt_admin_shutdown_pending = false;
 static uint32_t ble_gatt_admin_shutdown_ms = 0u;
 static bool ble_gatt_shutdown_after_settings_write = false;
+static bool ble_gatt_pending_write_is_name = false;
 static bool ble_gatt_shutdown_run_armed_after_reset = false;
 static bool ble_gatt_admin_enabled = false;
 
@@ -410,8 +411,29 @@ static bool ble_gatt_start_settings_write(uint32_t arm_mode)
         return true;
     }
 
+    ble_gatt_pending_write_is_name = false;
     ble_gatt_shutdown_after_settings_write = true;
     app_log_write("ACK,ARM_SETTINGS_WRITE_STARTED");
+    return false;
+}
+
+static bool ble_gatt_start_name_write(const char *name)
+{
+    if (!uwb_persistent_settings_name_is_valid(name))
+    {
+        app_log_write("ERR,NAME_INVALID");
+        return true;
+    }
+
+    if (!uwb_persistent_settings_write_name(name))
+    {
+        app_log_write("ERR,ARM_SETTINGS_BUSY");
+        return true;
+    }
+
+    ble_gatt_pending_write_is_name = true;
+    ble_gatt_shutdown_after_settings_write = true;
+    app_log_write("ACK,NAME_SETTINGS_WRITE_STARTED");
     return false;
 }
 
@@ -421,7 +443,16 @@ static void ble_gatt_service_settings_write(void)
     {
         uwb_persistent_settings_t settings = uwb_persistent_settings_get();
         safety_apply_persistent_arm_mode(settings.arm_mode);
-        app_log_write(ble_gatt_arm_ack_for_mode(settings.arm_mode));
+        if (ble_gatt_pending_write_is_name)
+        {
+            ble_gatt_pending_write_is_name = false;
+            snprintf(output_buf, sizeof(output_buf), "ACK,NAME,%s,SAVED", settings.name);
+            app_log_write(output_buf);
+        }
+        else
+        {
+            app_log_write(ble_gatt_arm_ack_for_mode(settings.arm_mode));
+        }
         if (ble_gatt_shutdown_after_settings_write)
         {
             ble_gatt_shutdown_after_settings_write = false;
@@ -911,6 +942,28 @@ static bool handle_app_command(const char *cmd)
         return false;
     }
 
+    if (strcmp(cmd, "CFG,GET_NAME") == 0)
+    {
+#ifdef UWB_BLE_GATT_ENABLED
+        uwb_persistent_settings_t settings = uwb_persistent_settings_get();
+        snprintf(output_buf, sizeof(output_buf), "NAME,%s", settings.name);
+        app_log_write(output_buf);
+#else
+        app_log_write("NAME,UWB");
+#endif
+        return false;
+    }
+
+    if (strncmp(cmd, "CFG,NAME,", 9) == 0)
+    {
+#ifdef UWB_BLE_GATT_ENABLED
+        return ble_gatt_start_name_write(cmd + 9);
+#else
+        app_log_write("ERR,NAME_REQUIRES_BLE_GATT");
+        return true;
+#endif
+    }
+
     if ((strcmp(cmd, "ARM,GET") == 0) || (strcmp(cmd, "CFG,GET_ARM") == 0))
     {
         const char *mode = "DISARMED";
@@ -1183,6 +1236,7 @@ int ss_twr_initiator_custom(void)
         else
         {
             safety_disarm();
+            ble_nus_bridge_set_device_name(settings.name);
             ble_nus_bridge_init();
             ble_gatt_admin_enabled = true;
             app_log_write("BLE_GATT,READY");
@@ -1219,14 +1273,12 @@ int ss_twr_initiator_custom(void)
                 continue;
             }
 
-            if (ble_nus_bridge_is_advertising_enabled())
+            /* Vario model: BLE advertising runs continuously alongside UWB.
+             * While a client is connected, ranging pauses (admin mode);
+             * on disconnect the bridge restarts advertising and ranging
+             * resumes on the next loop iteration. */
+            if (ble_nus_bridge_is_connected())
             {
-                if (!ble_nus_bridge_is_client_ready())
-                {
-                    __WFE();
-                    continue;
-                }
-
                 process_app_commands();
                 __WFE();
                 continue;

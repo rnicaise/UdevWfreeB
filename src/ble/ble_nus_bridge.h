@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+void ble_nus_bridge_set_device_name(const char *name);
 void ble_nus_bridge_init(void);
 bool ble_nus_bridge_is_connected(void);
 bool ble_nus_bridge_is_client_ready(void);

@@ -85,6 +85,7 @@
 <div class="card">
   <h2>État du boîtier</h2>
   <dl class="kv">
+    <dt>Nom</dt><dd id="stName">—</dd>
     <dt>Rôle</dt><dd id="stRole">—</dd>
     <dt>Profil UWB</dt><dd id="stProfile">—</dd>
     <dt>TX power</dt><dd id="stTxpwr">—</dd>
@@ -97,6 +98,11 @@
 
 <div class="card">
   <h2>Paramètres</h2>
+  <div class="row">
+    <label>Nom</label>
+    <input type="text" id="nameInput" placeholder="1-15 car. A-Z a-z 0-9 - _" maxlength="15" disabled>
+    <button id="btnSetName" disabled>Renommer</button>
+  </div>
   <div class="row">
     <label>Profil</label>
     <select id="selProfile">
@@ -156,7 +162,8 @@ let device = null, rxChar = null, rxBuffer = "";
 const $ = id => document.getElementById(id);
 const logEl = $("log");
 const connectedButtons = ["btnDisconnect","btnRefresh","btnSetProfile","btnSetTxpwr",
-  "btnArmDist","btnArmTilt","btnDisarm","btnFire","btnDfu","btnSend","cmdInput"];
+  "btnArmDist","btnArmTilt","btnDisarm","btnFire","btnDfu","btnSend","cmdInput",
+  "btnSetName","nameInput"];
 
 if (!navigator.bluetooth) $("unsupported").style.display = "block";
 
@@ -181,12 +188,14 @@ function handleLine(text) {
   log(text, cls);
   // Mise à jour de l'état affiché
   if (text.startsWith("ROLE,"))            $("stRole").textContent = text.slice(5);
+  else if (text.startsWith("NAME,"))       { $("stName").textContent = text.slice(5); $("nameInput").value = text.slice(5); }
   else if (text.startsWith("PROFILE,"))    $("stProfile").textContent = text.slice(8);
   else if (text.startsWith("TXPWR,"))      $("stTxpwr").textContent = text.slice(6);
   else if (text.startsWith("ARM,") && !text.startsWith("ARM,WRITE")) $("stArm").textContent = text.slice(4);
   else if (text.startsWith("ACK,TXPWR,"))  $("stTxpwr").textContent = text.split(",")[2];
   else if (text.startsWith("ACK,PROFILE_SWITCH_ARMED,")) $("stProfile").textContent = text.split(",")[2];
   else if (text.startsWith("ACK,ARM,"))    $("stArm").textContent = text.split(",")[2];
+  else if (text.startsWith("ACK,NAME,"))   $("stName").textContent = text.split(",")[2];
 }
 
 function onNotify(event) {
@@ -209,7 +218,7 @@ async function connect() {
   try {
     setState("connecting", "Recherche…");
     device = await navigator.bluetooth.requestDevice({
-      filters: [{ namePrefix: "UWB" }],
+      filters: [{ services: [NUS_SERVICE] }],
       optionalServices: [NUS_SERVICE],
     });
     device.addEventListener("gattserverdisconnected", onDisconnected);
@@ -240,7 +249,7 @@ async function send(cmd) {
 }
 
 async function refresh() {
-  for (const cmd of ["CFG,GET_ROLE", "CFG,GET_PROFILE", "CFG,GET_TXPWR", "ARM,GET"]) {
+  for (const cmd of ["CFG,GET_NAME", "CFG,GET_ROLE", "CFG,GET_PROFILE", "CFG,GET_TXPWR", "ARM,GET"]) {
     await send(cmd);
     await new Promise(r => setTimeout(r, 150));
   }
@@ -250,6 +259,14 @@ $("btnConnect").onclick = connect;
 $("btnDisconnect").onclick = () => device?.gatt.disconnect();
 $("btnRefresh").onclick = refresh;
 $("btnSetProfile").onclick = () => send(`CFG,PROFILE,${$("selProfile").value}`);
+$("btnSetName").onclick = () => {
+  const name = $("nameInput").value.trim();
+  if (!/^[A-Za-z0-9_-]{1,15}$/.test(name)) {
+    log("Nom invalide: 1-15 caractères A-Z a-z 0-9 - _", "rx err");
+    return;
+  }
+  send(`CFG,NAME,${name}`);
+};
 $("btnSetTxpwr").onclick = () => send(`CFG,TXPWR,${$("selTxpwr").value}`);
 $("btnArmDist").onclick = () => send("ARM,DIST,2.00");
 $("btnArmTilt").onclick = () => send("ARM,TILT,50");
