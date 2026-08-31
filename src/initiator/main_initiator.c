@@ -244,11 +244,12 @@ static bool ble_gatt_reset_after_fire_window = false;
 static void safety_request_fire_now(const char *event)
 {
     fire_request_frames_remaining = 200u;
-    /* Rule triggers use the countdown path: 10 s buzzer warning on the
-     * responder, then the 2 s active window. Manual PYRO,FIRE_NOW keeps
-     * the immediate path for bench tests. */
-    fire_request_code = POLL_MSG_FIRE_COUNTDOWN;
+    /* Rule triggers fire immediately: audible jingle on the vest module,
+     * then the responder opens its 2 s active window right away. */
+    fire_request_code = POLL_MSG_FIRE_IMMEDIATE;
     safety_disarm();
+    /* Audible cue on the vest module (initiator): trigger happened. */
+    pyro_buzzer_trigger_jingle();
 #ifdef UWB_BLE_GATT_ENABLED
     /* Freeze the black box: pre-trigger history + short post-trigger tail. */
     uwb_event_log_trigger((uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u));

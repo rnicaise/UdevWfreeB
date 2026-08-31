@@ -10,4 +10,8 @@
 
 void pyro_buzzer_beep_three_times(void);
 
+/* Short video-game style jingle: rising C-major arpeggio C6-E6-G6-C7
+ * (~300 ms, blocking). Played on the vest module when a rule triggers. */
+void pyro_buzzer_trigger_jingle(void);
+
 #endif /* PYRO_BUZZER_H */
