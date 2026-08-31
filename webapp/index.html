@@ -142,6 +142,23 @@
 </div>
 
 <div class="card">
+  <h2>Mise à jour firmware (OTA)</h2>
+  <div class="row">
+    <input type="file" id="dfuFile" accept=".zip" style="color:var(--muted)">
+  </div>
+  <div class="row">
+    <button id="btnDfuStart" disabled>Mettre à jour</button>
+    <span id="dfuStatus" class="note"></span>
+  </div>
+  <div class="row">
+    <progress id="dfuProgress" max="100" value="0" style="width:100%;display:none"></progress>
+  </div>
+  <div class="note">Package .zip signé (nrfutil). Étape 1 : redémarre le boîtier en mode DFU.
+    Étape 2 : choisir « UWBR_DFU » dans la fenêtre Bluetooth pour flasher.
+    Les chutes enregistrées peuvent être perdues pendant la mise à jour.</div>
+</div>
+
+<div class="card">
   <h2>Boîte noire — chutes enregistrées</h2>
   <div class="row">
     <button id="btnLogList" disabled>Lister les chutes</button>
@@ -381,6 +398,203 @@ $("btnLogClear").onclick = () => {
     send("LOG,CLEAR");
   }
 };
+
+// --- Mise à jour firmware (OTA — Nordic Secure DFU BLE) ---
+const DFU_SERVICE = 0xfe59;
+const DFU_CTRL   = "8ec90001-f315-4f60-9fb8-838830daea50";
+const DFU_PACKET = "8ec90002-f315-4f60-9fb8-838830daea50";
+const DFU_PACKET_SIZE = 20;
+
+const dfu = { pkg: null, phase: "idle" };
+
+function dfuStatus(text) { $("dfuStatus").textContent = text; }
+function dfuProgress(pct) {
+  const el = $("dfuProgress");
+  el.style.display = pct == null ? "none" : "block";
+  if (pct != null) el.value = pct;
+}
+
+// CRC32 (polynôme standard, comme zlib/nrfutil)
+const crcTable = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(data, crc = 0) {
+  crc = ~crc >>> 0;
+  for (let i = 0; i < data.length; i++) crc = (crcTable[(crc ^ data[i]) & 0xff] ^ (crc >>> 8)) >>> 0;
+  return ~crc >>> 0;
+}
+
+// Lecture ZIP minimale (entrées Stored ou Deflate)
+async function unzip(buf) {
+  const bytes = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  let eocd = -1;
+  for (let i = bytes.length - 22; i >= 0; i--) {
+    if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("ZIP invalide (EOCD introuvable)");
+  const count = dv.getUint16(eocd + 10, true);
+  let off = dv.getUint32(eocd + 16, true);
+  const files = {};
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) throw new Error("ZIP invalide (central dir)");
+    const method = dv.getUint16(off + 10, true);
+    const compSize = dv.getUint32(off + 20, true);
+    const nameLen = dv.getUint16(off + 28, true);
+    const extraLen = dv.getUint16(off + 30, true);
+    const commentLen = dv.getUint16(off + 32, true);
+    const localOff = dv.getUint32(off + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(off + 46, off + 46 + nameLen));
+    const lNameLen = dv.getUint16(localOff + 26, true);
+    const lExtraLen = dv.getUint16(localOff + 28, true);
+    const dataOff = localOff + 30 + lNameLen + lExtraLen;
+    let data = bytes.slice(dataOff, dataOff + compSize);
+    if (method === 8) {
+      const ds = new DecompressionStream("deflate-raw");
+      const stream = new Blob([data]).stream().pipeThrough(ds);
+      data = new Uint8Array(await new Response(stream).arrayBuffer());
+    } else if (method !== 0) {
+      throw new Error(`Méthode ZIP non gérée: ${method}`);
+    }
+    files[name] = data;
+    off += 46 + nameLen + extraLen + commentLen;
+  }
+  return files;
+}
+
+async function parseDfuPackage(file) {
+  const files = await unzip(await file.arrayBuffer());
+  if (!files["manifest.json"]) throw new Error("manifest.json absent du zip");
+  const manifest = JSON.parse(new TextDecoder().decode(files["manifest.json"]));
+  const app = manifest.manifest && manifest.manifest.application;
+  if (!app) throw new Error("Package sans image application");
+  const dat = files[app.dat_file], bin = files[app.bin_file];
+  if (!dat || !bin) throw new Error("Fichiers .dat/.bin absents du zip");
+  return { dat, bin };
+}
+
+$("dfuFile").onchange = async () => {
+  const f = $("dfuFile").files[0];
+  dfu.pkg = null;
+  dfu.phase = "idle";
+  $("btnDfuStart").textContent = "Mettre à jour";
+  if (!f) { $("btnDfuStart").disabled = true; return; }
+  try {
+    dfu.pkg = await parseDfuPackage(f);
+    dfuStatus(`Package OK — app ${(dfu.pkg.bin.length / 1024).toFixed(0)} Ko`);
+    $("btnDfuStart").disabled = false;
+  } catch (e) {
+    dfuStatus(`Package invalide: ${e.message}`);
+    $("btnDfuStart").disabled = true;
+  }
+};
+
+$("btnDfuStart").onclick = async () => {
+  if (!dfu.pkg) return;
+  if (dfu.phase === "idle" && rxChar) {
+    // Phase 1 : redémarrer le boîtier en mode DFU
+    await send("BOOT,DFU");
+    dfu.phase = "rebooted";
+    $("btnDfuStart").textContent = "Flasher (choisir UWBR_DFU)";
+    dfuStatus("Boîtier redémarré en DFU — cliquer pour flasher");
+    return;
+  }
+  // Phase 2 (ou boîtier déjà en mode DFU) : connexion bootloader + upload
+  try {
+    await dfuUpload(dfu.pkg);
+    dfu.phase = "idle";
+    $("btnDfuStart").textContent = "Mettre à jour";
+  } catch (e) {
+    dfuStatus(`Échec DFU: ${e.message}`);
+    dfuProgress(null);
+    log(`DFU: ${e.message}`, "rx err");
+  }
+};
+
+async function dfuUpload(pkg) {
+  dfuStatus("Recherche du bootloader…");
+  const dev = await navigator.bluetooth.requestDevice({
+    filters: [{ services: [DFU_SERVICE] }],
+    optionalServices: [DFU_SERVICE],
+  });
+  const server = await dev.gatt.connect();
+  const service = await server.getPrimaryService(DFU_SERVICE);
+  const ctrl = await service.getCharacteristic(DFU_CTRL);
+  const packet = await service.getCharacteristic(DFU_PACKET);
+
+  let pendingResolve = null;
+  const responses = [];
+  await ctrl.startNotifications();
+  ctrl.addEventListener("characteristicvaluechanged", ev => {
+    const v = new Uint8Array(ev.target.value.buffer);
+    if (pendingResolve) { const r = pendingResolve; pendingResolve = null; r(v); }
+    else responses.push(v);
+  });
+
+  function request(opcode, payload = []) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { pendingResolve = null; reject(new Error(`timeout op 0x${opcode.toString(16)}`)); }, 10000);
+      const settle = v => {
+        clearTimeout(timer);
+        if (v[0] !== 0x60 || v[1] !== opcode) return reject(new Error(`réponse inattendue [${v}]`));
+        if (v[2] !== 0x01) return reject(new Error(`op 0x${opcode.toString(16)} → erreur ${v[2]}${v[2] === 0x05 ? " (signature/version rejetée)" : ""}`));
+        resolve(v.slice(3));
+      };
+      if (responses.length) settle(responses.shift());
+      else pendingResolve = settle;
+      ctrl.writeValue(new Uint8Array([opcode, ...payload])).catch(reject);
+    });
+  }
+
+  const u32 = v => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+  const rd32 = (a, o) => (a[o] | (a[o+1] << 8) | (a[o+2] << 16) | (a[o+3] << 24)) >>> 0;
+
+  async function writeData(data, onChunk) {
+    for (let i = 0; i < data.length; i += DFU_PACKET_SIZE) {
+      await packet.writeValueWithoutResponse(data.subarray(i, i + DFU_PACKET_SIZE));
+      if (onChunk && (i / DFU_PACKET_SIZE) % 16 === 0) onChunk(i);
+    }
+  }
+
+  // PRN = 0 : pas de notifications CRC intermédiaires
+  await request(0x02, [0, 0]);
+
+  // Objet 1 : init packet (.dat)
+  dfuStatus("Envoi de l'init packet…");
+  await request(0x01, [0x01, ...u32(pkg.dat.length)]);
+  await writeData(pkg.dat);
+  let r = await request(0x03);
+  if (rd32(r, 0) !== pkg.dat.length || rd32(r, 4) !== crc32(pkg.dat)) throw new Error("CRC init packet");
+  await request(0x04); // execute (vérifie la signature)
+
+  // Objet 2 : firmware (.bin) par tranches de max_size
+  const sel = await request(0x06, [0x02]);
+  const maxSize = rd32(sel, 0);
+  let crc = 0;
+  for (let off = 0; off < pkg.bin.length; off += maxSize) {
+    const chunk = pkg.bin.subarray(off, Math.min(off + maxSize, pkg.bin.length));
+    await request(0x01, [0x02, ...u32(chunk.length)]);
+    await writeData(chunk, i => {
+      const pct = ((off + i) / pkg.bin.length) * 100;
+      dfuProgress(pct);
+      dfuStatus(`Transfert… ${((off + i) / 1024).toFixed(0)} / ${(pkg.bin.length / 1024).toFixed(0)} Ko`);
+    });
+    crc = crc32(chunk, crc);
+    r = await request(0x03);
+    if (rd32(r, 0) !== off + chunk.length || rd32(r, 4) !== crc) throw new Error(`CRC firmware @${off}`);
+    await request(0x04);
+  }
+  dfuProgress(100);
+  dfuStatus("Mise à jour terminée — le boîtier redémarre");
+  log("DFU terminé, nouveau firmware actif", "sys");
+  setTimeout(() => dfuProgress(null), 3000);
+}
 </script>
 </body>
 </html>
