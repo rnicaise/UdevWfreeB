@@ -413,6 +413,10 @@ target_compile_definitions(${TARGET_ELF} PRIVATE
     INITIALIZE_USER_SECTIONS
     $<$<NOT:$<BOOL:${UWB_BLE_GATT_ENABLED}>>:NO_VTOR_CONFIG>
     NRF52833_XXAA
+    # nRF52840-only SPIM3 erratum workaround writes to 0x40000E00 (POWER
+    # space); with the SoftDevice enabled the MWU traps that write and the
+    # firmware hangs. Not applicable to nRF52833 — force it off.
+    NRFX_SPIM3_NRF52840_ANOMALY_198_WORKAROUND_ENABLED=0
     USE_DRV_DW3000
     USE_DRV_DW3720
     NB_DW_DRIVERS=2

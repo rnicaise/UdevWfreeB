@@ -379,12 +379,15 @@ static bool ble_gatt_service_admin_shutdown(uint32_t now_ms)
         {
             (void)sd_power_gpregret_clr(0u, 0xFFu);
             (void)sd_power_gpregret_set(0u, BLE_GATT_BOOT_RUN_ARMED);
-            (void)sd_nvic_SystemReset();
         }
         else
         {
-            NRF_POWER->GPREGRET = 0u;
+            /* POWER is SoftDevice-protected: direct GPREGRET writes trap in
+             * the MWU. Always go through the SD API here (SD is enabled
+             * whenever this path runs). */
+            (void)sd_power_gpregret_clr(0u, 0xFFu);
         }
+        (void)sd_nvic_SystemReset();
         NVIC_SystemReset();
     }
     return true;
@@ -915,6 +918,14 @@ static bool handle_app_command(const char *cmd)
     {
         app_log_write("ACK,BOOT_DFU");
         uart_log_flush();
+#ifdef UWB_BLE_GATT_ENABLED
+        if (nrf_sdh_is_enabled())
+        {
+            (void)sd_power_gpregret_clr(0u, 0xFFu);
+            (void)sd_power_gpregret_set(0u, (uint32_t)BOOTLOADER_DFU_START);
+            (void)sd_nvic_SystemReset();
+        }
+#endif
         NRF_POWER->GPREGRET = (uint32_t)BOOTLOADER_DFU_START;
         NVIC_SystemReset();
         return false;
