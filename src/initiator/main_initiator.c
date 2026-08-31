@@ -244,7 +244,10 @@ static bool ble_gatt_reset_after_fire_window = false;
 static void safety_request_fire_now(const char *event)
 {
     fire_request_frames_remaining = 200u;
-    fire_request_code = POLL_MSG_FIRE_IMMEDIATE;
+    /* Rule triggers use the countdown path: 10 s buzzer warning on the
+     * responder, then the 2 s active window. Manual PYRO,FIRE_NOW keeps
+     * the immediate path for bench tests. */
+    fire_request_code = POLL_MSG_FIRE_COUNTDOWN;
     safety_disarm();
 #ifdef UWB_BLE_GATT_ENABLED
     /* Freeze the black box: pre-trigger history + short post-trigger tail. */
@@ -382,6 +385,48 @@ static char *safety_next_token(char **cursor)
     return tok;
 }
 
+/* Parse "123" / "123.45" into milli-units. Avoids newlib strtof/strtod,
+ * which hardfaults on this target (heap-backed _Balloc under SoftDevice). */
+static bool safety_parse_milli(const char *text, int32_t *out_milli)
+{
+    const char *p = text;
+    uint32_t int_part = 0u;
+    uint32_t frac_milli = 0u;
+    uint32_t frac_scale = 100u;
+    bool any_digit = false;
+
+    while ((*p >= '0') && (*p <= '9'))
+    {
+        if (int_part > 1000000u)
+        {
+            return false;
+        }
+        int_part = (int_part * 10u) + (uint32_t)(*p - '0');
+        any_digit = true;
+        p++;
+    }
+    if (*p == '.')
+    {
+        p++;
+        while ((*p >= '0') && (*p <= '9'))
+        {
+            if (frac_scale > 0u)
+            {
+                frac_milli += (uint32_t)(*p - '0') * frac_scale;
+                frac_scale /= 10u;
+            }
+            any_digit = true;
+            p++;
+        }
+    }
+    if (!any_digit || (*p != '\0') || (int_part > 1000000u))
+    {
+        return false;
+    }
+    *out_milli = (int32_t)((int_part * 1000u) + frac_milli);
+    return true;
+}
+
 /* Parse "DIST,GT,2.00,500[,AND,TILT,GT,50,200]..." into a rule. */
 static bool safety_rule_parse(const char *text, uwb_arm_rule_t *rule)
 {
@@ -401,7 +446,6 @@ static bool safety_rule_parse(const char *text, uwb_arm_rule_t *rule)
         char *val_tok = safety_next_token(&cursor);
         char *ms_tok = safety_next_token(&cursor);
         char *end = NULL;
-        float value;
 
         if (rule->count >= UWB_ARM_RULE_MAX_CONDS)
         {
@@ -439,12 +483,10 @@ static bool safety_rule_parse(const char *text, uwb_arm_rule_t *rule)
             return false;
         }
 
-        value = strtof(val_tok, &end);
-        if ((end == val_tok) || (value < 0.0f) || (value > 1000000.0f))
+        if (!safety_parse_milli(val_tok, &c->threshold_milli))
         {
             return false;
         }
-        c->threshold_milli = (int32_t)(value * 1000.0f + 0.5f);
 
         c->hold_ms = (uint32_t)strtoul(ms_tok, &end, 10);
         if ((end == ms_tok) || (c->hold_ms > 3600000u))
@@ -536,6 +578,12 @@ static bool ble_gatt_service_admin_shutdown(uint32_t now_ms)
 
     if ((int32_t)(now_ms - ble_gatt_admin_shutdown_ms) >= 0)
     {
+        /* Never reset while the black box is dumping to flash or a
+         * settings write is in flight (e.g. FIRE_NOW capture). */
+        if (uwb_event_log_busy() || uwb_persistent_settings_write_pending())
+        {
+            return true;
+        }
         if (ble_gatt_shutdown_run_armed_after_reset)
         {
             (void)sd_power_gpregret_clr(0u, 0xFFu);

@@ -8,8 +8,10 @@ from bleak import BleakClient, BleakScanner
 DFU_SERVICE = "0000fe59-0000-1000-8000-00805f9b34fb"
 DFU_CTRL = "8ec90001-f315-4f60-9fb8-838830daea50"
 DFU_PACKET = "8ec90002-f315-4f60-9fb8-838830daea50"
+NUS_RX = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
 
 PKG = sys.argv[1] if len(sys.argv) > 1 else "build/dfu_packages/initiator_legacy_ble_v2.zip"
+APP_NAME = sys.argv[2] if len(sys.argv) > 2 else "UWB"
 PORT = "/dev/cu.usbmodem0007602209081"
 
 
@@ -17,6 +19,23 @@ def load_pkg(path):
     z = zipfile.ZipFile(path)
     manifest = json.loads(z.read("manifest.json"))["manifest"]["application"]
     return z.read(manifest["dat_file"]), z.read(manifest["bin_file"])
+
+
+async def boot_dfu_over_ble():
+    """Send BOOT,DFU to the application over NUS. Returns True on success."""
+    dev = await BleakScanner.find_device_by_name(APP_NAME, timeout=6)
+    if not dev:
+        return False
+    try:
+        async with BleakClient(dev, timeout=15) as client:
+            await client.write_gatt_char(NUS_RX, b"BOOT,DFU\n", response=False)
+            print(f"BOOT,DFU envoyé en BLE à {APP_NAME}")
+            await asyncio.sleep(0.5)
+        return True
+    except Exception as exc:
+        # une déconnexion brutale est attendue: le boîtier reset en DFU
+        print(f"(déconnexion attendue: {exc})")
+        return True
 
 
 async def main():
@@ -27,6 +46,8 @@ async def main():
     dev = await BleakScanner.find_device_by_name("UWBR_DFU", timeout=4)
     if dev:
         print("déjà en mode DFU")
+    elif await boot_dfu_over_ble():
+        time.sleep(1.0)
     else:
         # 1. reboot app into DFU (retry until ACK, UART RX can be flaky at full CSV rate)
         ser = serial.Serial(PORT, 460800, timeout=0.1)
