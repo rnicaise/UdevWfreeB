@@ -319,6 +319,19 @@ static void pyro_buzzer_tone(uint16_t freq_hz, uint16_t duration_ms)
     nrf_gpio_pin_clear(PYRO_BUZZER_PIN);
 }
 
+/* Short video-game style jingle played once when a trigger starts the
+ * countdown: rising C-major arpeggio C6-E6-G6-C7 (~300 ms total). */
+static void pyro_buzzer_trigger_jingle(void)
+{
+    static const uint16_t notes[] = { 1047u, 1319u, 1568u, 2093u };
+
+    for (uint32_t i = 0u; i < (sizeof(notes) / sizeof(notes[0])); i++)
+    {
+        pyro_buzzer_tone(notes[i], 60u);
+        nrf_delay_ms(15);
+    }
+}
+
 static void pyro_trigger_init(void)
 {
     nrf_gpio_cfg_output(PYRO_BUZZER_PIN);
@@ -376,7 +389,7 @@ static void pyro_trigger_process(void)
         pyro_next_fx_tick = now;
         pyro_leds_set(false);
         uart_log_write("PYRO,COUNTDOWN_START");
-        pyro_buzzer_tone(880u, 60u);
+        pyro_buzzer_trigger_jingle();
     }
 
     if (pyro_state == PYRO_STATE_COUNTDOWN)

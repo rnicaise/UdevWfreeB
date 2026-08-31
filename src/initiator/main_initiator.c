@@ -264,9 +264,12 @@ static void safety_request_fire_now(const char *event)
 /* Evaluate the rule in disjunctive normal form: AND binds tighter than OR.
  * A condition is satisfied once its predicate has held continuously for
  * hold_ms; an AND group fires when all its conditions are satisfied at the
- * same instant. */
+ * same instant.
+ * TILT is the RESPONDER's tilt (the pyro box): its accel arrives in the
+ * Response frame. On RX timeout resp_accel is zeros -> tilt invalid ->
+ * holds reset, same contract as an invalid distance. */
 static void safety_service_triggers(uint32_t ms, bool distance_valid, float distance_m,
-                                    const accel_data_t *sample)
+                                    const int16_t resp_accel[3])
 {
     bool satisfied[UWB_ARM_RULE_MAX_CONDS];
     int32_t dist_mm = 0;
@@ -283,7 +286,10 @@ static void safety_service_triggers(uint32_t ms, bool distance_valid, float dist
     {
         dist_mm = (int32_t)(distance_m * 1000.0f);
     }
-    tilt_valid = safety_tilt_millideg(sample, &tilt_md);
+    {
+        accel_data_t resp_sample = { resp_accel[0], resp_accel[1], resp_accel[2] };
+        tilt_valid = safety_tilt_millideg(&resp_sample, &tilt_md);
+    }
 
     for (uint32_t i = 0u; i < safety_rule.count; i++)
     {
@@ -2055,8 +2061,9 @@ int ss_twr_initiator_custom(void)
             dwt_writesysstatuslo(SYS_STATUS_ALL_RX_TO | SYS_STATUS_ALL_RX_ERR);
         }
 
-        /* Evaluate the trigger rule every cycle, even when ranging failed
-         * (responder off / out of range): tilt-only conditions must still work. */
+        /* Evaluate the trigger rule every cycle, even when ranging failed:
+         * invalid measurements (no response -> no distance, no responder
+         * accel) must reset the hold timers. */
         {
             uint32_t now_ms = (uint32_t)(((uint64_t)NRF_RTC2->COUNTER * 1000u) / 32768u);
 #ifdef UWB_BLE_GATT_ENABLED
@@ -2069,7 +2076,7 @@ int ss_twr_initiator_custom(void)
                                    filtered_distance_m, ia, cycle_resp_accel);
             }
 #endif
-            safety_service_triggers(now_ms, cycle_dist_valid, cycle_dist_m, &accel_data);
+            safety_service_triggers(now_ms, cycle_dist_valid, cycle_dist_m, cycle_resp_accel);
         }
 
 #ifndef UWB_BLE_GATT_ENABLED
